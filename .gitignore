@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+
+# Rust / Tauri
+src-tauri/target/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Temp files
+*.tmp
+*.temp
+.tmp/
+.claude/scratch/
+
+# Coverage
+coverage/
+
+# Environment / secrets
+*.local
+.env
+.env.*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Python
+__pycache__/
+
+# Codex
+.agents/
+.codex-home/
+plugins/
+scripts/install-codex-home-skills.sh
+
+# Claude Code project config
+.claude/projects/
+# Swarm-review working findings (agents write/consume; ledger is the committed record)
+.swarm/
+# Session handoff scratch doc (untracked; history purge pending)
+.claude/handoff.md
+
+# Owner-curated artifacts — untracked for now to keep checkpoints simple
+# (planning docs, code-review reports, WIP skills, dir-scoped CLAUDE.md lore,
+#  prior task-manager import/export helpers, loose patch exports).
+plans/
+docs/reviews/2026-07-12-*.md
+.claude/skills/impl-delegated/
+.claude/skills/impl-fast/
+.claude/skills/impl-auto/
+scripts/CLAUDE.md
+src-tauri/CLAUDE.md
+src/CLAUDE.md
+scripts/export_*.py
+scripts/import_*.py
+*.patch
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,11 @@
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7
+# NOT set: warn-on-all-wildcard-imports. It would close the `use super::*` exemption
+# that `#![deny(clippy::wildcard_imports)]` leaves open, and the tree has no hand-written
+# glob import to lose — but `tauri::generate_handler!` expands to one per command, so
+# turning it on fails the build with 62 errors nobody can fix at the source.
+# Function length is a build-time rule, not a review heuristic: an agent counting
+# lines by hand only ever produced false positives against a threshold it invented.
+# Existing violators carry #[allow(clippy::too_many_lines)] with a TODO; split them
+# when the surrounding code is next touched.
+too-many-lines-threshold = 60

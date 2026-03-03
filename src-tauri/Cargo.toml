@@ -1,0 +1,70 @@
+[package]
+name = "apreswork"
+version = "0.1.0"
+description = "Schedule and track tasks for outside working hours"
+authors = ["izeren"]
+license = "Apache-2.0"
+repository = ""
+edition = "2021"
+rust-version = "1.85.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
+rusqlite = { version = "0.34", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+thiserror = "2"
+uuid = { version = "1", features = ["v7", "serde"] }
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "query"] }
+tower = { version = "0.5", features = [] }
+tokio = { version = "1", features = ["net", "macros"] }
+# Phase 4 (G3): OAuth2 PKCE loopback flow + blocking HTTP client + URL parsing
+# reqwest-blocking enables impl SyncHttpClient for reqwest::blocking::Client inside oauth2.
+# rustls-tls: no system OpenSSL dep (same rationale as bundled SQLite).
+oauth2 = { version = "5", default-features = false, features = ["reqwest-blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+url = "2"
+# Backup archives (M11): single-entry zip around a VACUUM INTO snapshot.
+# Default features trimmed — deflate only (no crypto/lzma/zstd surface).
+zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
+# Native save/open dialogs for manual backup export/import (M11.3).
+tauri-plugin-dialog = "2.7.1"
+
+# OS keyring for refresh-token storage (Change 2 of the OAuth security task).
+# Replaces plaintext google_auth.json; access token stays memory-only.
+# Platform features are required: without them keyring silently falls back to
+# an in-process mock that discards secrets on process exit.
+# sync-secret-service: DBus Secret Service (GNOME Keyring / KWallet).
+# crypto-rust: pure-Rust AES-128-CBC (dh-ietf1024-sha256-aes128-cbc-pkcs7) for
+#   the DBus Secret Service bus-transport encryption layer.
+# Note: sync-secret-service links libdbus-1.so dynamically at runtime. Unlike
+# SQLite (bundled) and OpenSSL (rustls-tls), libdbus-1.so is part of the base
+# GNOME/KDE desktop system and is universally present on the target platforms.
+# keyring's "vendored" feature would bundle libdbus statically but requires
+# openssl-src (compiles OpenSSL), which contradicts the rustls-tls rationale.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+test-case = "3"
+tempfile = "3"
+http-body-util = "0.1"
+# MockRuntime for exercising command-layer glue (profile gate) without a window.
+tauri = { version = "2.11", features = ["test"] }

@@ -1,0 +1,868 @@
+/* Copyright 2026 Aleksandr Iushmanov (@izeren) */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* ===================================================================
+   Design System — CSS Custom Properties + Base Styles
+   Naming: --color-*, --spacing-*, --font-*, --radius-*, --shadow-*
+   Dark/light: Phase 6 will add [data-theme="dark"] overrides.
+   =================================================================== */
+
+/* --- Reset --- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* --- Custom Properties (Light theme defaults) --- */
+
+:root {
+  /* Colors — surfaces */
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f5f6f8;
+  --color-bg-tertiary: #ebedf0;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f0f1f3;
+  --color-surface-active: #e4e6e9;
+  --color-border: #d1d5db;
+  --color-border-light: #e5e7eb;
+
+  /* Colors — text */
+  --color-text: #1a1a2e;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+  --color-text-inverse: #ffffff;
+
+  /* Colors — brand / accent */
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-light: #e0e7ff;
+
+  /* Colors — priority */
+  --color-priority-low: #6b7280;
+  --color-priority-medium: #3b82f6;
+  --color-priority-high: #f59e0b;
+  --color-priority-critical: #ef4444;
+
+  /* Colors — status */
+  --color-status-backlog: #9ca3af;
+  --color-status-pending: #f59e0b;
+  --color-status-scheduled: #3b82f6;
+  --color-status-completed: #10b981;
+  --color-status-cancelled: #6b7280;
+
+  /* Colors — chunk (calendar blocks) */
+  --color-chunk-scheduled: #dbeafe;
+  --color-chunk-scheduled-border: #93c5fd;
+  --color-chunk-completed: #d1fae5;
+  --color-chunk-completed-border: #6ee7b7;
+  --color-chunk-fixed: #fef3c7;
+  --color-chunk-fixed-border: #fcd34d;
+
+  /* Colors — feedback */
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+  /* Destructive actions (danger buttons, destructive menu items, error text) */
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+
+  /* Colors — calendar */
+  --color-time-indicator: #ef4444;
+  --color-schedule-window: rgba(79, 70, 229, 0.06);
+  --color-hour-line: #e5e7eb;
+  --color-half-hour-line: #f3f4f6;
+  --color-calendar-past-wash: color-mix(in srgb, var(--color-text) 5%, transparent);
+  --calendar-past-chunk-saturate: 0.35;
+
+  /* Spacing scale (4px base) */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+  --spacing-10: 40px;
+  --spacing-12: 48px;
+
+  /* Typography */
+  --font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height: 1.5;
+  --line-height-tight: 1.25;
+
+  /* Borders & Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+
+  /* Layout */
+  --sidebar-width: 220px;
+  --header-height: 48px;
+  --calendar-hour-height: 60px;
+
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition-normal: 200ms ease;
+}
+
+/* --- Base Styles --- */
+
+html {
+  height: 100%;
+  font-family: var(--font-family);
+  font-size: 16px;
+  line-height: var(--line-height);
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  height: 100%;
+  min-height: 100vh;
+  font-size: var(--font-size-base);
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* --- Typography --- */
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+h1 {
+  font-size: var(--font-size-2xl);
+}
+h2 {
+  font-size: var(--font-size-xl);
+}
+h3 {
+  font-size: var(--font-size-lg);
+}
+
+/* --- Interactive Elements --- */
+
+button {
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-2) var(--spacing-4);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+button:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+}
+
+button:active {
+  background: var(--color-surface-active);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Primary Button --- */
+
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  border-color: var(--color-primary);
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* --- Danger Button (destructive actions are unmistakably red) --- */
+
+.btn-danger {
+  background: var(--color-danger);
+  color: var(--color-text-inverse);
+  border-color: var(--color-danger);
+}
+
+.btn-danger:hover {
+  background: var(--color-danger-hover);
+  border-color: var(--color-danger-hover);
+  color: var(--color-text-inverse);
+}
+
+/* --- Cancel Button (muted text on the plain button surface; pairs with
+   .btn-primary/.btn-danger as a dialog's non-primary action) --- */
+
+.btn-cancel {
+  color: var(--color-text-secondary);
+  transition: color var(--transition-fast);
+}
+
+.btn-cancel:hover:enabled {
+  color: var(--color-text);
+}
+
+/* --- Small Button --- */
+
+.btn-sm {
+  padding: var(--spacing-1) var(--spacing-3);
+  font-size: var(--font-size-xs);
+}
+
+/* --- Muted Button (bordered, secondary-toned) --- */
+
+.btn-muted {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.btn-muted:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+/* --- Icon Button (small, borderless, muted-icon controls) --- */
+
+.icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  padding: 0;
+}
+
+.icon-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* --- Calendar grid (month nav + day-of-week header + day buttons) --- */
+/* Shared by DateTimePicker.svelte and MiniCalendar.svelte; each keeps its own
+   sizing (button dimensions, font-size, gap) as a local override. */
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.calendar-nav-btn {
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.calendar-nav-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.weekday-row,
+.day-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.weekday-row {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.calendar-day-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+  border-color: transparent;
+  background: transparent;
+}
+
+.calendar-day-btn:hover,
+.calendar-day-btn:focus-visible {
+  border-color: var(--color-border-light);
+  background: var(--color-surface-hover);
+}
+
+.calendar-day-btn--outside {
+  color: var(--color-text-tertiary);
+}
+
+.calendar-day-btn--today {
+  color: var(--color-primary);
+}
+
+.calendar-day-btn--selected {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  border-color: var(--color-primary);
+}
+
+/* --- Option button (selectable row/segment: quick-date shortcuts, week-start
+   toggle, time-menu options) --- */
+
+.option-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.option-btn:hover,
+.option-btn:focus-visible {
+  border-color: var(--color-border-light);
+  background: var(--color-surface-hover);
+}
+
+.option-btn--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--spacing-2);
+  width: 100%;
+  padding: 6px 8px;
+}
+
+/* --- Inputs --- */
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: border-color var(--transition-fast);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+/* --- Links --- */
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* --- Scrollbar (subtle) --- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--radius-full);
+}
+
+/* --- Utility Classes --- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted,
+.status-line {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.error-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+  margin: 0;
+}
+
+.section-label,
+.meta-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- Form Field Pattern (label + input row shared across task/schedule forms) --- */
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-4);
+}
+
+.field-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text);
+}
+
+.required {
+  color: var(--color-error);
+  margin-left: 2px;
+}
+
+@media (max-width: 640px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Field Input Pattern (shared by EventDialog/RecurringSection/SharedFormFields/
+   TaskForm's .field-input; .field-textarea shared by EventDialog + SharedFormFields;
+   .field-error shared by RecurringSection + SharedFormFields; each host adds its own
+   extras like RecurringSection's narrower .field-input--narrow) --- */
+
+.field-input {
+  width: 100%;
+}
+
+.field-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.field-error {
+  border-color: var(--color-error);
+}
+
+.field-error:focus {
+  border-color: var(--color-error);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+}
+
+/* --- Checkbox Label Pattern (shared by EventDialog/TaskForm's .checkbox-label,
+   BackupSection's .toggle-label, RecurringSection's .radio-label, and
+   SettingsView's .calendar-label; each host still owns its display type plus
+   any host-specific extras like user-select or the nested input sizing) --- */
+
+.checkbox-label,
+.toggle-label,
+.radio-label,
+.calendar-label {
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+/* --- Labels Section Pattern (shared by SharedFormFields.svelte and TaskDetail.svelte) --- */
+
+.labels-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.labels-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-1);
+}
+
+/* --- Chunk List Pattern (shared by TaskDetail.svelte and TaskForm.svelte via
+   ChunkList.svelte); hosts may locally extend .chunk-time (e.g. nowrap) via
+   :global() since ChunkList renders in its own component scope. --- */
+
+.chunks-state {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.chunks-state--empty {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.chunks-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.chunk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  padding: var(--spacing-2) var(--spacing-3);
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  flex-wrap: wrap;
+}
+
+.chunk-time {
+  flex: 1;
+  color: var(--color-text);
+  min-width: 0;
+}
+
+/* --- Settings Card Pattern (shared by settings + profile screens) --- */
+
+.settings-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-5);
+  max-width: 540px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+}
+
+.card-title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  margin: 0;
+}
+
+.button-row-start {
+  display: flex;
+  justify-content: flex-start;
+  gap: var(--spacing-3);
+  flex-wrap: wrap;
+}
+
+/* --- Reschedule Button (icon+label spin control; shared by RescheduleButton.svelte
+   and CalendarView.svelte's own sync-btn — each host still owns padding/margin) --- */
+
+.reschedule-btn,
+.sync-btn {
+  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+}
+
+.reschedule-icon {
+  display: inline-block;
+  font-size: var(--font-size-base);
+  line-height: 1;
+}
+
+.reschedule-icon.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Dialog Action Row (flex-end button row; shared by CompleteChunkDialog's
+   .dialog-actions, ConfirmDialog's .confirm-actions, and ProfileGate's/
+   ProfilesView's .button-row) --- */
+
+.dialog-actions,
+.confirm-actions,
+.button-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-3);
+}
+
+/* --- Bordered Flex Row (shared shape between CompleteChunkDialog's option
+   cards and StatusView's warning rows; each host still owns border color,
+   radius, and background) --- */
+
+.option-card,
+.warning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-3);
+  padding: var(--spacing-3) var(--spacing-4);
+}
+
+/* --- Badge Pill Pattern (shared by PriorityBadge's .priority-badge,
+   StatusBadge's .status-badge, and TaskDetail's .recurring-badge; each host
+   still sets its own color/background, which vary by priority/status level
+   or are fixed per host) --- */
+
+.priority-badge,
+.status-badge,
+.recurring-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--spacing-2);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* --- Bordered Control Pattern (padding+border+radius+font-size shared by
+   TaskListView's .search-input/.clear-btn, FilterDropdown's
+   .filter-dropdown-toggle, and CommentSection's .comment-input; each host
+   still owns background/color/cursor/transition, which vary by role) --- */
+
+.search-input,
+.clear-btn,
+.filter-dropdown-toggle,
+.comment-input {
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+/* --- Section Header Bar (shared by DayView's .day-header and TaskListView's
+   .sort-bar; both are a bordered strip along the top of a scrollable list) --- */
+
+.day-header,
+.sort-bar {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-bottom: 1px solid var(--color-border-light);
+  background: var(--color-bg-secondary);
+}
+
+/* --- Stacked Form Pattern (column flex + gap shared by ProfileGate's
+   .create-form and ProfilesView's .stack-form; ProfilesView adds a top
+   border since its form stacks below other content) --- */
+
+.create-form,
+.stack-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+
+/* --- Profile Name Input (shared by ProfileGate, ProfilesView rename, and
+   CreateProfileForm; each sets its own font-size via scoped styles) --- */
+
+.text-input {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-2) var(--spacing-3);
+}
+
+/* --- Ghost Button Base (borderless, transparent-background button shared by
+   ProfileSwitcher's .switcher-button, ContextMenu's .menu-item, and Modal's
+   .close-btn) --- */
+
+.switcher-button,
+.menu-item,
+.close-btn {
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+/* --- Ghost Row Button (full-width left-aligned row shape shared by
+   .switcher-button and .menu-item; .close-btn is a fixed-size icon button
+   instead) --- */
+
+.switcher-button,
+.menu-item {
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  width: 100%;
+  padding: var(--spacing-2) var(--spacing-3);
+  text-align: left;
+}
+
+/* --- Ghost Button Accent (tinted icon color + hover shift shared by
+   .switcher-button and .close-btn; .menu-item uses its own untinted color) --- */
+
+.switcher-button,
+.close-btn {
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.switcher-button:hover,
+.close-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+/* --- Subsection Heading (h4 label style shared by ProfilesView's
+   .section-heading and SettingsView's .picker-heading) --- */
+
+.section-heading,
+.picker-heading {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text);
+  margin: 0;
+}
+
+/* --- Floating Panel Base (surface/border/shadow shared by ContextMenu's
+   .context-menu and .submenu-panel, and FilterDropdown's .filter-popover;
+   each host still sets its own position/z-index/padding/sizing) --- */
+
+.context-menu,
+.submenu-panel,
+.filter-popover {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+/* --- Ghost Button Base 2 (borderless small button shared by Toast's
+   .toast-dismiss, TaskRow's .row-menu, and SharedFormFields' .preview-toggle;
+   each host still sets its own sizing and hover/focus treatment) --- */
+
+.toast-dismiss,
+.row-menu,
+.preview-toggle {
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+/* --- Dismiss/Menu Sizing (flex-shrink + no-border shared by .toast-dismiss
+   and .row-menu; .preview-toggle keeps a visible border) --- */
+
+.toast-dismiss,
+.row-menu {
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+}
+
+/* --- Dismiss Hover Fade (font-size + hover-color transition shared by
+   .toast-dismiss and .preview-toggle; .row-menu uses its own opacity-based
+   reveal) --- */
+
+.toast-dismiss,
+.preview-toggle {
+  font-size: var(--font-size-xs);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.toast-dismiss:hover,
+.preview-toggle:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}

@@ -1,0 +1,8 @@
+{
+  "threshold": 0.00,
+  "format": ["rust", "typescript"],
+  "formatsExts": { "typescript": ["svelte", "ts"] },
+  "ignore": ["**/node_modules/**", "**/target/**", "**/build/**", "**/coverage/**"],
+  "reporters": ["console"],
+  "gitignore": true
+}

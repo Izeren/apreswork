@@ -1,0 +1,20 @@
+{
+  "mode": "enforce",
+  "scope": [
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "src-tauri/src/**/*.rs",
+    "**/*.test.ts",
+    "src-tauri/**/tests/**/*.rs"
+  ],
+  "finders": {
+    "test": {
+      "match": ["**/*.test.ts", "src-tauri/**/tests/**/*.rs"],
+      "agents": ["code-smell-nitpicker", "doc-slop-reviewer", "test-param-enforcer"]
+    },
+    "production": {
+      "match": ["src/**", "src-tauri/src/**"],
+      "agents": ["code-smell-nitpicker", "doc-slop-reviewer"]
+    }
+  }
+}

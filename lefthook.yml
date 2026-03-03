@@ -1,0 +1,41 @@
+# Copyright 2026 Aleksandr Iushmanov (@izeren)
+# SPDX-License-Identifier: Apache-2.0
+
+pre-commit:
+  parallel: true
+  commands:
+    rust-fmt:
+      root: src-tauri/
+      run: cargo fmt --all -- --check
+      glob: "src-tauri/src/**/*.rs"
+    rust-clippy:
+      root: src-tauri/
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      glob: "src-tauri/src/**/*.rs"
+    ts-lint:
+      run: npx eslint src/
+      glob: "src/**/*.{ts,svelte}"
+    ts-format:
+      run: npx prettier --check "src/**/*.{ts,svelte,js,css}"
+      glob: "src/**/*.{ts,svelte,js,css}"
+    svelte-check:
+      run: npm run check
+      glob: "src/**/*.{ts,svelte}"
+    license-headers:
+      run: bash scripts/check-license-headers.sh
+      glob: "*.{rs,ts,svelte,css}"
+    file-length:
+      run: bash scripts/check-file-length.sh
+      glob: "*.{rs,ts,svelte,css}"
+    invoke-contract:
+      run: python3 scripts/check_invoke_contract.py
+      glob: "{src/lib/api.ts,src-tauri/src/lib.rs,src-tauri/src/commands/*.rs,src/**/*.{ts,svelte}}"
+    secrets:
+      run: git diff --cached --name-only --diff-filter=ACMR | xargs -r "$(command -v gitleaks || echo "$HOME/go/bin/gitleaks")" dir --redact
+    swarm-gate:
+      run: python3 scripts/swarm/ledger.py gate
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: bash scripts/commit-msg-check.sh {1}
