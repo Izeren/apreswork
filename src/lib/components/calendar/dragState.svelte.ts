@@ -17,6 +17,8 @@ const DEFAULT_CREATE_CHUNK_PX = (DEFAULT_CREATE_CHUNK_MINUTES / 60) * HOUR_HEIGH
 
 export interface DragInfo {
   chunkId: string;
+  /** Parent task id — what a release within the drag threshold opens. */
+  taskId: string;
   taskTitle: string;
   /** ISO string of chunk's original start time. */
   originalStartTime: string;
@@ -52,7 +54,6 @@ export interface ResizeInfo {
   currentHeightPx: number;
   /** Top position in px (stays fixed during resize). */
   topPx: number;
-  /** Which day column. */
   columnDate: Date | null;
 }
 
@@ -121,18 +122,8 @@ export class DragState {
   active: DragInfo | null = $state(null);
   resizing: ResizeInfo | null = $state(null);
   creating: CreateInfo | null = $state(null);
-  /**
-   * chunkId + moved outcome of the most recently ended move drag. Whoever drives
-   * the drag (the chunk itself, or a parent container capturing the pointer to
-   * survive a week flip) calls end(); either way, the chunk's own click handler
-   * reads this to tell a real drag from a click. This is needed because pointer
-   * capture retargets pointer events but not the browser's follow-up click, which
-   * still lands on the chunk's own (unmoved) element via normal hit-testing.
-   */
-  lastEnded: { chunkId: string; moved: boolean } | null = $state(null);
 
   start(info: DragInfo): void {
-    this.lastEnded = null;
     this.active = info;
   }
 
@@ -162,7 +153,6 @@ export class DragState {
   end(): DragInfo | null {
     const final = this.active;
     this.active = null;
-    if (final) this.lastEnded = { chunkId: final.chunkId, moved: final.moved };
     return final;
   }
 
@@ -176,7 +166,6 @@ export class DragState {
 
   updateResizePosition(clientY: number, gridRect: DOMRect): void {
     if (!this.resizing) return;
-    // Compute the raw bottom edge position in grid coordinates (pixels from grid top)
     const rawBottomPx = clientY - gridRect.top;
     const rawBottomMinutes = (rawBottomPx / HOUR_HEIGHT_PX) * 60;
     const snappedBottomMinutes = snapMinutes(rawBottomMinutes, 0);

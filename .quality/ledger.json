@@ -1308,11 +1308,11 @@
     }
   },
   "src/lib/components/calendar/ChunkBlock.svelte": {
-    "blob": "9b256b793eb21b559fe6d39c43033fe6d631add4",
+    "blob": "be66c90ce31f7f2cd0c9d8d9a3ac0ff9bb768bcd",
     "findings": {}
   },
   "src/lib/components/calendar/ChunkBlock.test.ts": {
-    "blob": "2287439a268654b38493f969b4bc0a2991b56342",
+    "blob": "9d76fbad5227e2bb2c62784a49e46a25b85b412d",
     "findings": {
       "49628b45-8e1c-4920-afd4-b8bc13d1a79a": {
         "agent": "test-param-enforcer",
@@ -1420,7 +1420,7 @@
     "findings": {}
   },
   "src/lib/components/calendar/DragOverlay.test.ts": {
-    "blob": "7da4d3b6d886731fe33068461c93c4518a3e4a46",
+    "blob": "ffc29bad18fa967d64bef5d017a729087a02d9a8",
     "findings": {}
   },
   "src/lib/components/calendar/EventDialog.svelte": {
@@ -1503,7 +1503,7 @@
     "findings": {}
   },
   "src/lib/components/calendar/WeekView.svelte": {
-    "blob": "4c3498abc57d2a89476bf8f3eef386110d7e8991",
+    "blob": "6ddf864eb581cceebc72918e01308c3c663b53e1",
     "findings": {
       "32278345-e03d-4847-aada-17083f4a5c9e": {
         "agent": "code-smell-nitpicker",
@@ -1519,15 +1519,27 @@
     }
   },
   "src/lib/components/calendar/WeekView.test.ts": {
-    "blob": "38aa22d68a330e249b6561d2cc984959c15ce822",
-    "findings": {}
+    "blob": "f30fe2bffbc21822e6eb225c65bc8ba00c04971f",
+    "findings": {
+      "9d3677f0-08f6-4c3a-8fbd-3662627a443f": {
+        "agent": "test-param-enforcer",
+        "at": "2026-09-10T07:41:06.277950+00:00",
+        "blob": "0be6dc9fc6eb1a1a5637f208925bf07553d2149c",
+        "session_reason": "The finder's own rule says 'no if/else inside the test body', but its proposed fix explicitly contains if (isClickable) { ... } else { ... } inside the body. The two tests have structurally different assertion paths: the clickable path delegates to isExternalEventClickableAndOpens() which owns its own expect calls, while the non-clickable path checks getAttribute('role'). Merging them requires an if/else branch \u2014 which the rule itself prohibits. This is a false positive under the finder's own stated criterion.",
+        "severity": "MINOR",
+        "summary": "GROUP external event editing clickability: tests [makes a primary-calendar external clickable and forwards to oneventopen, leaves a non-primary external read-only] \u2014 two tests differ only in calendar_id ('primary' vs 'other-cal') and expected outcome (clickable vs read-only)",
+        "symbol": "it('makes a primary-calendar external clickable and forwards to oneventopen'",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The two tests have structurally different assertion paths: the clickable test calls the async helper isExternalEventClickableAndOpens (which checks role=button, performs a click, and verifies the callback spy), while the read-only test checks a static DOM attribute (role=img) with no interaction. The finder mistook these for a simple data-only variation, but the finder's own proposed fix contains if/else branching, violating its own stated criterion that the parametrized body must have no if/else."
+      }
+    }
   },
   "src/lib/components/calendar/calendarLayout.test.ts": {
     "blob": "b6c6cd873dedd35bb8c5ef69b9c1f86e733f365e",
     "findings": {}
   },
   "src/lib/components/calendar/calendarLayout.ts": {
-    "blob": "7ba92771c9aa88d9bd97f8f7bc443143821094cc",
+    "blob": "bd6ad62ccaa2334715df89f99e97aad9557093e4",
     "findings": {
       "9cfe6164-fa91-41e6-af13-3d4c44ce3e46": {
         "agent": "code-smell-nitpicker",
@@ -1589,11 +1601,23 @@
     "findings": {}
   },
   "src/lib/components/calendar/dragState.svelte.ts": {
-    "blob": "98b9fc7890429d3e75cc26950b1fedef7e990a72",
-    "findings": {}
+    "blob": "772c47d95a8cd7337dc24e44cb7829d9898d353a",
+    "findings": {
+      "2498a55c-2cb6-4ab6-abe6-a6eab31b2c30": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-03T07:24:57.499670+00:00",
+        "blob": "e30dd0182eae5abd473c18c3022177e0f569d1cf",
+        "session_reason": "Each end* method (end, endResize, endCreate) reads one distinct reactive state field, nulls it and returns the prior value; each cancel* method (cancel, cancelResize, cancelCreate) nulls one field. The field access is the entire body. A key-parameterised helper such as private take<K extends 'active' | 'resizing' | 'creating'>(key: K): this[K] needs the write this[key] = null, which TypeScript rejects with TS2322 (null is not assignable to the intersection DragInfo & ResizeInfo & CreateInfo) unless routed through per-key overloads or a widening cast, both of which add more lines than they remove. The closure form the finder proposes, finalizeState(getter, setter), puts two lambdas at every call site, which is more code than the three-line body it replaces; nullState(setter) wraps a single assignment in an indirection. All six stay distinct public entry points either way, so nothing is removed, only routed through an extra layer. The finder mistook three structurally similar three-line bodies for shareable logic: there is no logic here beyond the field access itself, and no sharing form is shorter or clearer than the direct access. CLAUDE.md Decision Ladder rung 5 (one line / one expression beats a helper) points the same way.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"Near-duplicate function bodies \u2014 two functions differing only in one or two variables that could share a helper or collapse into a parametrized form.\" The methods `end()`, `endResize()`, `endCreate()` are identical except for the state field (active/resizing/creating); same pattern for `cancel()`, `cancelResize()`, `cancelCreate()`. Six methods repeat the same logic across three state types.",
+        "symbol": "end",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "Each end/cancel method is 1-3 lines operating on a distinct typed Svelte  field (DragInfo, ResizeInfo, CreateInfo). The shared pattern is the primitive take-and-clear idiom (read, null, return) or a single null assignment \u2014 too trivial and type-distinct for any helper to reduce. The finder mistook structural similarity of minimal, differently-typed method bodies for shareable near-duplicate logic; the Decision Ladder rung 5 (one expression beats a helper) applies."
+      }
+    }
   },
   "src/lib/components/calendar/dragState.test.ts": {
-    "blob": "111710d9be6f3bd26aa6c5bd934d9c4c12210f72",
+    "blob": "41524b1893bc13930cb42a220769391dbe47e552",
     "findings": {}
   },
   "src/lib/components/calendar/eventDialogShared.test.ts": {

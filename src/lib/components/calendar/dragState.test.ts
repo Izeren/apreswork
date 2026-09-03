@@ -16,11 +16,26 @@ import {
 } from './dragState.svelte';
 import type { CreateInfo, ResizeInfo } from './dragState.svelte';
 
+const MARCH_28 = new Date(2026, 2, 28);
+const MARCH_29 = new Date(2026, 2, 29); // DST transition date
+
 /** Fresh create-selection anchor at 9:00 on 2026-03-28, shared across describes. */
 const baseCreateInfo = (): CreateInfo => ({
   anchorTopPx: 9 * HOUR_HEIGHT_PX,
   currentTopPx: 9 * HOUR_HEIGHT_PX,
-  columnDate: new Date(2026, 2, 28),
+  columnDate: MARCH_28,
+});
+
+/** Fresh resize info at 9:00–10:00 on 2026-03-28, shared across describes. */
+const baseResizeInfo = (): ResizeInfo => ({
+  chunkId: 'chunk-r1',
+  taskTitle: 'Resize Task',
+  originalStartTime: '2026-03-28T09:00:00Z',
+  originalEndTime: '2026-03-28T10:00:00Z',
+  originalHeightPx: HOUR_HEIGHT_PX,
+  currentHeightPx: HOUR_HEIGHT_PX,
+  topPx: 9 * HOUR_HEIGHT_PX,
+  columnDate: MARCH_28,
 });
 
 describe('snapMinutes', () => {
@@ -51,63 +66,80 @@ describe('snapMinutes', () => {
     expect(snapMinutes(raw, dur)).toBe(expected);
   });
 
-  it('SNAP_MINUTES constant is 5', () => {
-    expect(SNAP_MINUTES).toBe(5);
-  });
-
-  it('HOUR_HEIGHT_PX constant is 60', () => {
-    expect(HOUR_HEIGHT_PX).toBe(60);
+  it.each([
+    { constant: SNAP_MINUTES, expected: 5, label: 'SNAP_MINUTES' },
+    { constant: HOUR_HEIGHT_PX, expected: 60, label: 'HOUR_HEIGHT_PX' },
+  ])('$label constant', ({ constant, expected }) => {
+    expect(constant).toBe(expected);
   });
 });
 
 describe('topPxToIso', () => {
-  function makeColDate(): Date {
-    return new Date(2026, 2, 28, 0, 0, 0, 0);
-  }
-
+  // TZ=UTC (set in vitest config) keeps both sides of every assertion stable across environments.
+  // hours + minutes are the human-readable input; topPx is derived so the test name shows the exact expected string.
   it.each([
-    { label: '0:00', topPx: 0, hours: 0, minutes: 0 },
-    { label: '9:00', topPx: 9 * HOUR_HEIGHT_PX, hours: 9, minutes: 0 },
-    { label: '9:30', topPx: 9.5 * HOUR_HEIGHT_PX, hours: 9, minutes: 30 },
-    { label: '23:00', topPx: 23 * HOUR_HEIGHT_PX, hours: 23, minutes: 0 },
-  ])('returns ISO string at $label for topPx = $topPx', ({ topPx, hours, minutes }) => {
-    const d = new Date(topPxToIso(topPx, makeColDate()));
-    expect(d.getHours()).toBe(hours);
-    expect(d.getMinutes()).toBe(minutes);
-  });
-
-  it('preserves the calendar date from columnDate', () => {
-    const col = new Date(2026, 2, 28, 0, 0, 0, 0); // March 28
-    const iso = topPxToIso(10 * HOUR_HEIGHT_PX, col);
-    const d = new Date(iso);
-    expect(d.getFullYear()).toBe(2026);
-    expect(d.getMonth()).toBe(2); // March (0-indexed)
-    expect(d.getDate()).toBe(28);
-  });
-
-  it('returns a valid ISO string (parseable)', () => {
-    const col = makeColDate();
-    const iso = topPxToIso(6 * HOUR_HEIGHT_PX, col);
-    expect(isNaN(new Date(iso).getTime())).toBe(false);
-  });
-
-  it('matches local calendar semantics on DST transition dates', () => {
-    const col = new Date(2026, 2, 29, 0, 0, 0, 0);
-    const iso = topPxToIso(9 * HOUR_HEIGHT_PX, col);
-    const expected = new Date(2026, 2, 29, 9, 0, 0, 0).toISOString();
-    expect(iso).toBe(expected);
+    {
+      label: 'midnight',
+      hours: 0,
+      minutes: 0,
+      colDate: MARCH_28,
+      expected: '2026-03-28T00:00:00.000Z',
+    },
+    {
+      label: '9:00',
+      hours: 9,
+      minutes: 0,
+      colDate: MARCH_28,
+      expected: '2026-03-28T09:00:00.000Z',
+    },
+    {
+      label: '9:30',
+      hours: 9,
+      minutes: 30,
+      colDate: MARCH_28,
+      expected: '2026-03-28T09:30:00.000Z',
+    },
+    {
+      label: '23:00',
+      hours: 23,
+      minutes: 0,
+      colDate: MARCH_28,
+      expected: '2026-03-28T23:00:00.000Z',
+    },
+    {
+      label: 'DST (2026-03-29)',
+      hours: 9,
+      minutes: 0,
+      colDate: MARCH_29,
+      expected: '2026-03-29T09:00:00.000Z',
+    },
+  ])('$label → $expected', ({ hours, minutes, colDate, expected }) => {
+    const topPx = (hours + minutes / 60) * HOUR_HEIGHT_PX;
+    expect(topPxToIso(topPx, colDate)).toBe(expected);
   });
 });
 
 describe('clientYToTopPx', () => {
-  it('snaps a pointer coordinate to the nearest 5-minute grid line', () => {
-    const gridRect = new DOMRect(0, 0, 300, 24 * HOUR_HEIGHT_PX);
-    expect(clientYToTopPx(63, gridRect)).toBe(65);
-  });
+  const PX_PER_SNAP = (SNAP_MINUTES / 60) * HOUR_HEIGHT_PX; // 5px per 5-minute slot
+  // Smallest integer offset past the midpoint of a snap slot — guarantees rounding up.
+  const PAST_MIDPOINT_PX = Math.ceil(PX_PER_SNAP / 2);
 
-  it('clamps to midnight when pointer is above the grid', () => {
-    const gridRect = new DOMRect(0, 100, 300, 24 * HOUR_HEIGHT_PX);
-    expect(clientYToTopPx(0, gridRect)).toBe(0);
+  it.each([
+    {
+      label: 'snaps to the nearest 5-minute grid line',
+      gridTop: 0,
+      clientY: HOUR_HEIGHT_PX + PAST_MIDPOINT_PX, // 3px into the 1h05m slot → rounds up
+      expected: HOUR_HEIGHT_PX + PX_PER_SNAP, // 1h05m
+    },
+    {
+      label: 'clamps to midnight when pointer is above the grid',
+      gridTop: HOUR_HEIGHT_PX, // grid starts 1h down the page; pointer at Y=0 is above it
+      clientY: 0,
+      expected: 0,
+    },
+  ])('$label', ({ clientY, gridTop, expected }) => {
+    const gridRect = new DOMRect(0, gridTop, 300, 24 * HOUR_HEIGHT_PX);
+    expect(clientYToTopPx(clientY, gridRect)).toBe(expected);
   });
 });
 
@@ -143,16 +175,15 @@ describe('DragState', () => {
 
   beforeEach(async () => {
     const mod = await import('./dragState.svelte');
-    // Use the exported singleton but reset it
     dragState = mod.dragState as import('./dragState.svelte').DragState;
     dragState.cancel();
     dragState.cancelResize();
     dragState.cancelCreate();
-    dragState.lastEnded = null;
   });
 
   const baseDragInfo = (): import('./dragState.svelte').DragInfo => ({
     chunkId: 'chunk-1',
+    taskId: 'task-1',
     taskTitle: 'Test Task',
     originalStartTime: '2026-03-28T09:00:00Z',
     originalEndTime: '2026-03-28T10:00:00Z',
@@ -160,29 +191,58 @@ describe('DragState', () => {
     currentTopPx: 9 * HOUR_HEIGHT_PX,
     heightPx: HOUR_HEIGHT_PX,
     offsetY: 10,
-    columnDate: new Date(2026, 2, 28),
+    columnDate: MARCH_28,
     pressClientX: 0,
     pressClientY: 0,
     moved: false,
   });
 
   describe('start / active', () => {
-    it('sets active after start()', () => {
-      dragState.start(baseDragInfo());
-      expect(dragState.active).not.toBeNull();
-      expect(dragState.active?.chunkId).toBe('chunk-1');
+    it.each([
+      {
+        label: 'sets active after start()',
+        start: () => dragState.start(baseDragInfo()),
+        field: 'active' as const,
+        chunkId: 'chunk-1',
+      },
+      {
+        label: 'startResize sets resizing state',
+        start: () => dragState.startResize(baseResizeInfo()),
+        field: 'resizing' as const,
+        chunkId: 'chunk-r1',
+      },
+    ])('$label', ({ start, field, chunkId }) => {
+      start();
+      expect(dragState[field]).not.toBeNull();
+      expect(dragState[field]?.chunkId).toBe(chunkId);
     });
 
-    it('active is null initially', () => {
-      expect(dragState.active).toBeNull();
-    });
+    it.each([{ field: 'active' }, { field: 'resizing' }, { field: 'creating' }] as const)(
+      '$field is null initially',
+      ({ field }) => {
+        expect(dragState[field]).toBeNull();
+      },
+    );
   });
 
   describe('cancel', () => {
-    it('sets active to null', () => {
-      dragState.start(baseDragInfo());
-      dragState.cancel();
-      expect(dragState.active).toBeNull();
+    it.each([
+      {
+        label: 'cancel sets active to null',
+        start: () => dragState.start(baseDragInfo()),
+        cancel: () => dragState.cancel(),
+        field: 'active' as const,
+      },
+      {
+        label: 'cancelResize clears resizing state',
+        start: () => dragState.startResize(baseResizeInfo()),
+        cancel: () => dragState.cancelResize(),
+        field: 'resizing' as const,
+      },
+    ])('$label', ({ start, cancel, field }) => {
+      start();
+      cancel();
+      expect(dragState[field]).toBeNull();
     });
   });
 
@@ -201,55 +261,10 @@ describe('DragState', () => {
     });
   });
 
-  describe('lastEnded', () => {
-    // WeekView drives moves from a container it captures the pointer on, so the
-    // chunk's own DOM element never moves and the browser's follow-up click still
-    // lands on it (pointer capture retargets pointer events, not click). lastEnded
-    // is the shared signal a chunk's own click handler consults to tell a real
-    // drag apart from a click when its own pointerup handler never ran.
-    // Each case replays a sequence of drag operations and asserts the signal left
-    // behind ('startMoved' = a drag already past the drag threshold).
-    const cases: {
-      label: string;
-      ops: ('start' | 'startMoved' | 'end')[];
-      expected: { chunkId: string; moved: boolean } | null;
-    }[] = [
-      { label: 'is null initially', ops: [], expected: null },
-      {
-        label: 'records moved: true after a drag that crossed the threshold',
-        ops: ['startMoved', 'end'],
-        expected: { chunkId: 'chunk-1', moved: true },
-      },
-      {
-        label: 'records moved: false after a release that never crossed the threshold',
-        ops: ['start', 'end'],
-        expected: { chunkId: 'chunk-1', moved: false },
-      },
-      {
-        label: 'is cleared by the next start(), so it cannot outlive a later unrelated click',
-        ops: ['startMoved', 'end', 'start'],
-        expected: null,
-      },
-      {
-        label: 'is left untouched when end() is called with nothing active',
-        ops: ['end'],
-        expected: null,
-      },
-    ];
-
-    it.each(cases)('$label', ({ ops, expected }) => {
-      for (const op of ops) {
-        if (op === 'end') dragState.end();
-        else dragState.start({ ...baseDragInfo(), moved: op === 'startMoved' });
-      }
-      expect(dragState.lastEnded).toEqual(expected);
-    });
-  });
-
   describe('updateColumn', () => {
     it('updates columnDate in active info', () => {
       dragState.start(baseDragInfo());
-      const newDate = new Date(2026, 2, 29);
+      const newDate = MARCH_29;
       dragState.updateColumn(newDate);
       expect(dragState.active?.columnDate?.getDate()).toBe(29);
     });
@@ -304,7 +319,7 @@ describe('DragState', () => {
   describe('no-op guards', () => {
     it.each([
       { label: 'cancel', invoke: () => dragState.cancel() },
-      { label: 'updateColumn', invoke: () => dragState.updateColumn(new Date()) },
+      { label: 'updateColumn', invoke: () => dragState.updateColumn(MARCH_29) },
       { label: 'updateMoved', invoke: () => dragState.updateMoved(10, 10) },
       {
         label: 'updatePosition',
@@ -332,7 +347,7 @@ describe('DragState', () => {
 
     it('updateCreateColumn changes the target day', () => {
       dragState.startCreate(baseCreateInfo());
-      const nextDay = new Date(2026, 2, 29);
+      const nextDay = MARCH_29;
       dragState.updateCreateColumn(nextDay);
       expect(dragState.creating?.columnDate?.getDate()).toBe(29);
     });
@@ -349,34 +364,12 @@ describe('DragState', () => {
 describe('DragState — resize', () => {
   let dragState: import('./dragState.svelte').DragState;
 
-  const baseResizeInfo = (): ResizeInfo => ({
-    chunkId: 'chunk-r1',
-    taskTitle: 'Resize Task',
-    originalStartTime: '2026-03-28T09:00:00Z',
-    originalEndTime: '2026-03-28T10:00:00Z',
-    originalHeightPx: HOUR_HEIGHT_PX,
-    currentHeightPx: HOUR_HEIGHT_PX,
-    topPx: 9 * HOUR_HEIGHT_PX,
-    columnDate: new Date(2026, 2, 28),
-  });
-
   beforeEach(async () => {
     const mod = await import('./dragState.svelte');
     dragState = mod.dragState as import('./dragState.svelte').DragState;
     dragState.cancel();
     dragState.cancelResize();
-  });
-
-  describe('startResize / resizing', () => {
-    it('resizing is null initially', () => {
-      expect(dragState.resizing).toBeNull();
-    });
-
-    it('startResize sets resizing state', () => {
-      dragState.startResize(baseResizeInfo());
-      expect(dragState.resizing).not.toBeNull();
-      expect(dragState.resizing?.chunkId).toBe('chunk-r1');
-    });
+    dragState.cancelCreate();
   });
 
   describe('updateResizePosition', () => {
@@ -410,14 +403,6 @@ describe('DragState — resize', () => {
     });
   });
 
-  describe('cancelResize', () => {
-    it('clears resizing state', () => {
-      dragState.startResize(baseResizeInfo());
-      dragState.cancelResize();
-      expect(dragState.resizing).toBeNull();
-    });
-  });
-
   describe('no-op guards', () => {
     it.each([
       { label: 'cancelResize', invoke: () => dragState.cancelResize() },
@@ -437,6 +422,7 @@ describe('DragState — resize', () => {
       const mod_dragState: import('./dragState.svelte').DragState = dragState;
       const baseDrag: import('./dragState.svelte').DragInfo = {
         chunkId: 'chunk-m1',
+        taskId: 'task-m1',
         taskTitle: 'Move Task',
         originalStartTime: '2026-03-28T08:00:00Z',
         originalEndTime: '2026-03-28T09:00:00Z',
@@ -444,7 +430,7 @@ describe('DragState — resize', () => {
         currentTopPx: 8 * HOUR_HEIGHT_PX,
         heightPx: HOUR_HEIGHT_PX,
         offsetY: 0,
-        columnDate: new Date(2026, 2, 28),
+        columnDate: MARCH_28,
         pressClientX: 0,
         pressClientY: 0,
         moved: false,

@@ -8,6 +8,7 @@
     HOUR_HEIGHT_PX,
     CHUNK_MIN_HEIGHT_PX as MIN_HEIGHT_PX,
     TIME_LABEL_MIN_HEIGHT_PX,
+    RESIZE_HANDLE_PX,
     computeGridBlockStyle,
     timeToGridHeightPx,
   } from './calendarLayout';
@@ -19,7 +20,6 @@
   interface ChunkRenderProfile {
     statusClass: string;
     showFixedAppearance: boolean;
-    showCompleteAction: boolean;
     completeActionChecked: boolean;
     includeFixedInAria: boolean;
     includeCompletedInAria: boolean;
@@ -85,9 +85,6 @@
     return (b.getTime() - a.getTime()) / 60_000;
   }
 
-  /** Bottom handle zone in px — pointer within this area from the bottom triggers resize, not move. */
-  const RESIZE_HANDLE_PX = 8;
-
   /** Cross-view focus jump landed on this chunk — flash it until the carrier clears. */
   const isFlashing = $derived(calendarFocusState.chunkId === item.chunk.id);
 
@@ -140,7 +137,6 @@
     return {
       statusClass: `chunk-block--${status}`,
       showFixedAppearance,
-      showCompleteAction: true,
       completeActionChecked: isCompleted,
       includeFixedInAria: showFixedAppearance,
       includeCompletedInAria: isCompleted,
@@ -168,10 +164,7 @@
   /** True when the chunk ended before the current time (past-treatment). */
   const isPast = $derived(now !== null && chunkEnd.getTime() < now.getTime());
 
-  /** True while this chunk is being dragged. */
   const isDragging = $derived(dragState.active?.chunkId === item.chunk.id);
-
-  /** True while this chunk is being resized. */
   const isResizing = $derived(dragState.resizing?.chunkId === item.chunk.id);
 
   const blockStyle = $derived.by(() =>
@@ -221,15 +214,15 @@
 
     if (e.button !== 0) return;
 
+    suppressNextClick = true;
+
     const rect = blockEl.getBoundingClientRect();
     const fromBottom = rect.bottom - e.clientY;
 
-    // If pointer is in the bottom RESIZE_HANDLE_PX zone, start resize
     if (fromBottom <= RESIZE_HANDLE_PX) {
       e.preventDefault();
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       capturedPointerId = e.pointerId;
-      suppressNextClick = true;
       dragState.startResize({
         chunkId: item.chunk.id,
         taskTitle: item.task_title,
@@ -260,6 +253,7 @@
     const col = columnDate ?? chunkStart;
     dragState.start({
       chunkId: item.chunk.id,
+      taskId: item.chunk.task_id,
       taskTitle: item.task_title,
       originalStartTime: item.chunk.start_time,
       originalEndTime: item.chunk.end_time,
@@ -325,10 +319,10 @@
     const final = dragState.end();
     if (!final) return;
 
-    // Travel within the drag threshold is a click, not a drag — let handleClick
-    // open the task. A real drag never opens it (handleClick reads moved off
-    // dragState.lastEnded, set by dragState.end() above), even one that snapped back.
-    if (!final.moved) return;
+    if (!final.moved) {
+      onopen?.(item.chunk.task_id);
+      return;
+    }
 
     const originalDate = new Date(final.originalStartTime);
     const targetDate = final.columnDate ?? originalDate;
@@ -355,24 +349,18 @@
     }
   }
 
+  /** Inert after a pointer press (handled on pointerup); opens the task for programmatic/AT clicks. */
   function handleClick(): void {
     if (suppressNextClick) {
       suppressNextClick = false;
       return;
     }
-
-    // Primarily for parent-driven moves (WeekView): pointer capture there sits on
-    // its container, so this component's own handlePointerUp never runs and never
-    // sets suppressNextClick above, yet the browser's click still lands here via
-    // normal hit-testing. Also, a harmless belt-and-suspenders check when this
-    // component drove the move itself.
-    if (dragState.lastEnded?.chunkId === item.chunk.id) {
-      const { moved } = dragState.lastEnded;
-      dragState.lastEnded = null;
-      if (moved) return;
-    }
-
     onopen?.(item.chunk.task_id);
+  }
+
+  /** Keeps a press on an inner button from starting a move or resize of the block. */
+  function stopPointerPropagation(e: PointerEvent): void {
+    e.stopPropagation();
   }
 
   function handleCompleteClick(e: MouseEvent): void {
@@ -410,7 +398,6 @@
   class:is-short={isShort}
   class:is-fixed={renderProfile.showFixedAppearance}
   class:is-overdue={isOverdue}
-  class:has-complete-action={renderProfile.showCompleteAction}
   class:is-compact={compactTitle}
   class:is-flashing={isFlashing}
   data-density={density}
@@ -428,26 +415,24 @@
   onkeydown={handleKeyDown}
   oncontextmenu={handleContextMenu}
 >
-  {#if renderProfile.showCompleteAction}
-    <button
-      class="complete-toggle"
-      class:complete-toggle--checked={renderProfile.completeActionChecked}
-      aria-label={renderProfile.completeActionChecked
-        ? 'Reopen completed chunk'
-        : 'Complete chunk or task'}
-      role="checkbox"
-      aria-checked={renderProfile.completeActionChecked}
-      onpointerdown={(e: PointerEvent) => e.stopPropagation()}
-      onclick={handleCompleteClick}
-    >
-      <span aria-hidden="true">✓</span>
-    </button>
-  {/if}
+  <button
+    class="complete-toggle"
+    class:complete-toggle--checked={renderProfile.completeActionChecked}
+    aria-label={renderProfile.completeActionChecked
+      ? 'Reopen completed chunk'
+      : 'Complete chunk or task'}
+    role="checkbox"
+    aria-checked={renderProfile.completeActionChecked}
+    onpointerdown={stopPointerPropagation}
+    onclick={handleCompleteClick}
+  >
+    <span aria-hidden="true">✓</span>
+  </button>
   {#if onlock && !renderProfile.completeActionChecked}
     <button
       class="lock-btn"
       aria-label={item.chunk.is_fixed ? 'Unlock chunk' : 'Lock chunk'}
-      onpointerdown={(e: PointerEvent) => e.stopPropagation()}
+      onpointerdown={stopPointerPropagation}
       onclick={handleLockClick}
     >
       <span aria-hidden="true">{item.chunk.is_fixed ? '🔒' : '🔓'}</span>
@@ -458,7 +443,7 @@
       class="menu-btn"
       aria-label="Open chunk menu"
       aria-haspopup="menu"
-      onpointerdown={(e: PointerEvent) => e.stopPropagation()}
+      onpointerdown={stopPointerPropagation}
       onclick={handleMenuClick}
     >
       <span aria-hidden="true">⋯</span>
@@ -482,6 +467,8 @@
   .chunk-block {
     position: absolute;
     padding: var(--spacing-1) var(--spacing-2);
+    /* leave room for the completion toggle pinned to the top-left corner */
+    padding-left: calc(var(--spacing-2) + 0.95rem);
     border-radius: var(--radius-sm);
     border-left: 3px solid var(--color-chunk-scheduled-border);
     background: var(--color-chunk-scheduled);
@@ -509,12 +496,8 @@
 
   .chunk-block.is-dense {
     gap: 0;
-    padding-top: 2px;
-    padding-bottom: 2px;
-  }
-
-  .chunk-block.has-complete-action {
-    padding-left: calc(var(--spacing-2) + 0.95rem);
+    padding: 2px 4px;
+    padding-left: calc(4px + 0.8rem);
   }
 
   .chunk-block.is-past {
@@ -571,15 +554,6 @@
     border-left-color: var(--color-chunk-completed-border);
     box-shadow: inset 0 -1px 0
       color-mix(in srgb, var(--color-chunk-completed-border) 45%, transparent);
-  }
-
-  .chunk-block.is-dense {
-    padding-left: 4px;
-    padding-right: 4px;
-  }
-
-  .chunk-block.is-dense.has-complete-action {
-    padding-left: calc(4px + 0.8rem);
   }
 
   .chunk-block--scheduled.is-fixed {

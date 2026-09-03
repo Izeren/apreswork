@@ -167,14 +167,12 @@
     const final = dragState.end();
     if (!final) return;
 
-    // Travel within the drag threshold is a click, not a drag — nothing to
-    // commit here. Pointer capture on this container does not retarget the
-    // browser's follow-up click, which still lands on the chunk's own element
-    // and opens it via its onopen={onchunkopen} prop (see dragState.lastEnded,
-    // set by dragState.end() above, for how that click tells drag from click).
-    if (!final.moved) return;
+    // No movement → click; open from pointerup (capture guarantees delivery here).
+    if (!final.moved) {
+      onchunkopen?.(final.taskId);
+      return;
+    }
 
-    // A drag: commit the reposition only if it landed on a different slot.
     if (!onchunkmove) return;
     const originalDate = new Date(final.originalStartTime);
     const targetDate = final.columnDate ?? originalDate;
