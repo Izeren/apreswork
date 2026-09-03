@@ -7,12 +7,30 @@ import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import type { ComponentProps } from 'svelte';
 import type { ChunkStatus } from '../../types';
 import { dragState } from './dragState.svelte';
+import { RESIZE_HANDLE_PX, HOUR_HEIGHT_PX } from './calendarLayout';
 import {
   baseItem,
   importChunkBlock,
   installChunkBlockCleanup,
   localISO,
 } from './ChunkBlock.testHelpers';
+
+// Mock block geometry – must stay in sync with patchBlockForDrag and appendTimeGrid.
+// Derive all pointer-event coordinates from these so a rect change stays local.
+const MOCK_BLOCK_TOP = 100;
+const MOCK_BLOCK_BOTTOM = 160;
+const MOCK_GRID_TOP = 0;
+// Press point 20 px into the block from the top — well inside the move zone.
+const PRESS_OFFSET_FROM_TOP = 20;
+const PRESS_CLIENT_Y = MOCK_BLOCK_TOP + PRESS_OFFSET_FROM_TOP; // 120; fromBottom = 40 > RESIZE_HANDLE_PX
+// Half of RESIZE_HANDLE_PX from the bottom — guaranteed inside the resize zone.
+const RESIZE_PRESS_Y = MOCK_BLOCK_BOTTOM - Math.floor(RESIZE_HANDLE_PX / 2); // 156
+// baseItem defaults to a 9:00 start; releasing here snaps the chunk back to that slot.
+const CHUNK_START_HOUR = 9;
+const SNAP_BACK_RELEASE_Y =
+  MOCK_GRID_TOP + CHUNK_START_HOUR * HOUR_HEIGHT_PX + PRESS_OFFSET_FROM_TOP; // 560
+// Any Y landing the chunk at a clearly different slot (5:00).
+const DIFFERENT_SLOT_Y = MOCK_GRID_TOP + 5 * HOUR_HEIGHT_PX; // 300
 
 installChunkBlockCleanup();
 
@@ -29,7 +47,8 @@ async function renderChunk(
 }
 
 function patchBlockForDrag(block: HTMLElement): void {
-  block.getBoundingClientRect = () => ({ top: 100, bottom: 160, left: 0, right: 100 }) as DOMRect;
+  block.getBoundingClientRect = () =>
+    ({ top: MOCK_BLOCK_TOP, bottom: MOCK_BLOCK_BOTTOM, left: 0, right: 100 }) as DOMRect;
   Object.assign(block, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() });
 }
 
@@ -43,7 +62,8 @@ async function renderDraggableBlock(props: Partial<Omit<ChunkProps, 'item'>> = {
 function appendTimeGrid(block: HTMLElement): HTMLElement {
   const grid = document.createElement('div');
   grid.setAttribute('aria-label', 'Time grid');
-  grid.getBoundingClientRect = () => ({ top: 0, bottom: 1440 }) as DOMRect;
+  grid.getBoundingClientRect = () =>
+    ({ top: MOCK_GRID_TOP, bottom: MOCK_GRID_TOP + 24 * HOUR_HEIGHT_PX }) as DOMRect;
   document.body.appendChild(grid);
   grid.appendChild(block);
   return grid;
@@ -55,7 +75,6 @@ const renderProfileCases: Array<{
   isFixed: boolean;
   expectedStatusClass: string;
   expectFixedClass: boolean;
-  expectCompleteAction: boolean;
   expectCompleteChecked: boolean;
   expectFixedLabel: boolean;
   expectCompletedLabel: boolean;
@@ -66,7 +85,6 @@ const renderProfileCases: Array<{
     isFixed: false,
     expectedStatusClass: 'chunk-block--scheduled',
     expectFixedClass: false,
-    expectCompleteAction: true,
     expectCompleteChecked: false,
     expectFixedLabel: false,
     expectCompletedLabel: false,
@@ -77,7 +95,6 @@ const renderProfileCases: Array<{
     isFixed: true,
     expectedStatusClass: 'chunk-block--scheduled',
     expectFixedClass: true,
-    expectCompleteAction: true,
     expectCompleteChecked: false,
     expectFixedLabel: true,
     expectCompletedLabel: false,
@@ -88,7 +105,6 @@ const renderProfileCases: Array<{
     isFixed: false,
     expectedStatusClass: 'chunk-block--completed',
     expectFixedClass: false,
-    expectCompleteAction: true,
     expectCompleteChecked: true,
     expectFixedLabel: false,
     expectCompletedLabel: true,
@@ -99,7 +115,6 @@ const renderProfileCases: Array<{
     isFixed: true,
     expectedStatusClass: 'chunk-block--completed',
     expectFixedClass: false,
-    expectCompleteAction: true,
     expectCompleteChecked: true,
     expectFixedLabel: false,
     expectCompletedLabel: true,
@@ -116,7 +131,6 @@ describe('ChunkBlock — content', () => {
     const { container } = await renderChunk();
     const timeEl = container.querySelector('.chunk-time');
     expect(timeEl).toBeTruthy();
-    // Should contain "–" separator
     expect(timeEl!.textContent).toContain('–');
   });
 
@@ -244,9 +258,12 @@ describe('ChunkBlock — height', () => {
     },
   );
 
-  it('very short chunk (< 22px natural height) has minimum height of 22px', async () => {
+  it.each([
+    { label: 'very short (5 minutes)', durationMin: 5 },
+    { label: 'zero-duration', durationMin: 0 },
+  ])('$label chunk has minimum height of 22px', async ({ durationMin }) => {
     const { container } = await renderChunk({
-      chunk: { start_time: localISO(9, 0), end_time: localISO(9, 5) },
+      chunk: { start_time: localISO(9, 0), end_time: localISO(9, durationMin) },
     });
     const block = container.querySelector('.chunk-block') as HTMLElement | null;
     expect(block).toBeTruthy();
@@ -325,11 +342,11 @@ describe('ChunkBlock — context menu', () => {
 describe('ChunkBlock — complete action', () => {
   it.each(renderProfileCases)(
     '$label shows the correct completion toggle affordance',
-    async ({ status, isFixed, expectCompleteAction, expectCompleteChecked }) => {
+    async ({ status, isFixed, expectCompleteChecked }) => {
       const { container } = await renderChunk({ chunk: { status, is_fixed: isFixed } });
       const toggle = container.querySelector('.complete-toggle');
-      expect(Boolean(toggle)).toBe(expectCompleteAction);
-      expect(toggle?.getAttribute('aria-checked')).toBe(String(expectCompleteChecked));
+      expect(toggle).toBeTruthy();
+      expect(toggle!.getAttribute('aria-checked')).toBe(String(expectCompleteChecked));
     },
   );
 
@@ -346,21 +363,27 @@ describe('ChunkBlock — complete action', () => {
 });
 
 describe('ChunkBlock — accessibility', () => {
-  it('aria-label contains the task title', async () => {
-    const { container } = await renderChunk({ task_title: 'Yoga Session' });
-    const block = container.querySelector('.chunk-block');
-    const label = block!.getAttribute('aria-label') ?? '';
-    expect(label).toContain('Yoga Session');
-  });
+  const ariaLabelCases: Array<{
+    label: string;
+    overrides: Parameters<typeof baseItem>[0];
+    expected: string;
+  }> = [
+    {
+      label: 'the task title',
+      overrides: { task_title: 'Yoga Session' },
+      expected: 'Yoga Session',
+    },
+    {
+      label: 'the time range',
+      overrides: { chunk: { start_time: localISO(9, 0), end_time: localISO(10, 30) } },
+      expected: '09:00 – 10:30',
+    },
+  ];
 
-  it('aria-label contains the time range', async () => {
-    const { container } = await renderChunk({
-      chunk: { start_time: localISO(9, 0), end_time: localISO(10, 30) },
-    });
+  it.each(ariaLabelCases)('aria-label contains $label', async ({ overrides, expected }) => {
+    const { container } = await renderChunk(overrides);
     const block = container.querySelector('.chunk-block');
-    const label = block!.getAttribute('aria-label') ?? '';
-    // Should contain "–" separator
-    expect(label).toContain('–');
+    expect(block!.getAttribute('aria-label')).toContain(expected);
   });
 
   it.each(renderProfileCases)(
@@ -504,14 +527,6 @@ describe('ChunkBlock — edge cases', () => {
     const { container } = await renderChunk({ task_title: '' });
     expect(container.querySelector('.chunk-block')).toBeTruthy();
   });
-
-  it('renders zero-duration chunk at minimum height', async () => {
-    const { container } = await renderChunk({
-      chunk: { start_time: localISO(9, 0), end_time: localISO(9, 0) },
-    });
-    const block = container.querySelector('.chunk-block') as HTMLElement | null;
-    expect(block!.style.height).toBe('22px');
-  });
 });
 
 describe('ChunkBlock — detectColumnDate DOM structure', () => {
@@ -549,7 +564,6 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
     return dayColumns;
   }
 
-  /** Two-column day-columns parent: Mon Mar 23 at [0,100), Tue Mar 24 at [100,200). */
   function buildMondayTuesdayColumns(): HTMLElement {
     const mondayEpoch = new Date(2026, 2, 23).getTime();
     const tuesdayEpoch = new Date(2026, 2, 24).getTime();
@@ -571,13 +585,14 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
     document.body.appendChild(parentEl);
 
     patchBlockForDrag(block);
-    await fireEvent.pointerDown(block, { button: 0, clientY: 120, pointerId: 1 });
+    await fireEvent.pointerDown(block, { button: 0, clientY: PRESS_CLIENT_Y, pointerId: 1 });
     expect(dragState.active?.chunkId).toBe('chunk-1');
     expect(dragState.active?.columnDate?.getDate()).toBe(23);
 
     const grid = document.createElement('div');
     grid.setAttribute('aria-label', 'Time grid');
-    grid.getBoundingClientRect = () => ({ top: 0, bottom: 1440 }) as DOMRect;
+    grid.getBoundingClientRect = () =>
+      ({ top: MOCK_GRID_TOP, bottom: MOCK_GRID_TOP + 24 * HOUR_HEIGHT_PX }) as DOMRect;
     document.body.insertBefore(grid, parentEl);
     grid.appendChild(parentEl);
 
@@ -591,20 +606,31 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
     document.body.removeChild(grid);
   });
 
-  // Once a press passes the drag threshold it is a drag, so the follow-up click
-  // must never open the task — wherever the pointer is released. The release slot
-  // (snapped back to the original 9:00 ⇒ clientY 560, or a different slot ⇒ 300)
-  // is irrelevant to that invariant.
-  it.each([
-    { label: 'snaps back to the same slot', releaseY: 560 },
-    { label: 'lands on a different slot', releaseY: 300 },
-  ])('a self-driven drag that $label never opens the task', async ({ releaseY }) => {
-    const onopen = vi.fn();
+  /** Mount a self-driven block in a time grid and press it in the move zone. */
+  async function pressSelfDrivenBlock(
+    onopen: (taskId: string) => void,
+  ): Promise<{ block: HTMLElement; grid: HTMLElement }> {
     const { block } = await renderDraggableBlock({ onopen });
     const grid = appendTimeGrid(block);
+    await fireEvent.pointerDown(block, {
+      button: 0,
+      clientX: 0,
+      clientY: PRESS_CLIENT_Y,
+      pointerId: 1,
+    });
+    return { block, grid };
+  }
 
-    await fireEvent.pointerDown(block, { button: 0, clientX: 0, clientY: 120, pointerId: 1 });
-    await fireEvent.pointerMove(block, { clientX: 0, clientY: 300, pointerId: 1 });
+  // Once a press passes the drag threshold it is a drag, so the follow-up click
+  // must never open the task — wherever the pointer is released.
+  it.each([
+    { label: 'snaps back to the same slot', releaseY: SNAP_BACK_RELEASE_Y },
+    { label: 'lands on a different slot', releaseY: DIFFERENT_SLOT_Y },
+  ])('a self-driven drag that $label never opens the task', async ({ releaseY }) => {
+    const onopen = vi.fn();
+    const { block, grid } = await pressSelfDrivenBlock(onopen);
+
+    await fireEvent.pointerMove(block, { clientX: 0, clientY: DIFFERENT_SLOT_Y, pointerId: 1 });
     await fireEvent.pointerMove(block, { clientX: 0, clientY: releaseY, pointerId: 1 });
     await fireEvent.pointerUp(block, { clientX: 0, clientY: releaseY, pointerId: 1 });
 
@@ -615,9 +641,24 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
     document.body.removeChild(grid);
   });
 
+  it('a self-driven release without movement opens the task on pointerup, once', async () => {
+    const onopen = vi.fn();
+    const { block, grid } = await pressSelfDrivenBlock(onopen);
+
+    await fireEvent.pointerUp(block, { clientX: 0, clientY: PRESS_CLIENT_Y, pointerId: 1 });
+    expect(onopen).toHaveBeenCalledTimes(1);
+    expect(onopen).toHaveBeenCalledWith('task-1');
+
+    // The release already decided; the browser's follow-up click is inert.
+    block.click();
+    expect(onopen).toHaveBeenCalledTimes(1);
+
+    document.body.removeChild(grid);
+  });
+
   it('detectColumnDate returns null when block is not inside a .day-columns container', async () => {
     const { block } = await renderDraggableBlock();
-    await fireEvent.pointerDown(block, { button: 0, clientY: 120, pointerId: 1 });
+    await fireEvent.pointerDown(block, { button: 0, clientY: PRESS_CLIENT_Y, pointerId: 1 });
     expect(dragState.active?.chunkId).toBe('chunk-1');
     const initialDate = dragState.active?.columnDate;
 
@@ -633,8 +674,7 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
 
   it('pointer move during resize does not invoke detectColumnDate', async () => {
     const { block } = await renderDraggableBlock();
-    // clientY = 155 means fromBottom = 160 - 155 = 5 ≤ 8 → resize
-    await fireEvent.pointerDown(block, { button: 0, clientY: 155, pointerId: 1 });
+    await fireEvent.pointerDown(block, { button: 0, clientY: RESIZE_PRESS_Y, pointerId: 1 });
     expect(dragState.resizing?.chunkId).toBe('chunk-1');
     const initialResizeDate = dragState.resizing?.columnDate;
 
@@ -645,7 +685,6 @@ describe('ChunkBlock — detectColumnDate DOM structure', () => {
     grid.appendChild(parentEl);
 
     await fireEvent.pointerMove(block, { clientX: 150, clientY: 200, pointerId: 1 });
-    // Resize column date must not have changed
     expect(dragState.resizing?.columnDate).toEqual(initialResizeDate);
 
     dragState.cancelResize();

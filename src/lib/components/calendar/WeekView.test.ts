@@ -7,6 +7,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick, type ComponentProps } from 'svelte';
 import type { AgendaItem, ChunkStatus, ExternalEvent, ScheduleWindow } from '../../types';
 import { dragState } from './dragState.svelte';
+import { HOUR_HEIGHT_PX } from './calendarLayout';
 import { WEEK_FLIP_DWELL_MS } from './weekEdgeFlip';
 import {
   externalEventFixture,
@@ -35,7 +36,7 @@ function baseChunk(overrides: {
   status?: ChunkStatus;
   is_fixed?: boolean;
 }) {
-  const startTime = overrides.start_time ?? noonLocalISO(2026, 3, 23);
+  const startTime = overrides.start_time ?? MON_NOON;
   return {
     id: overrides.id ?? 'chunk-1',
     task_id: 'task-1',
@@ -82,6 +83,21 @@ const WEEK_DAYS = Array.from({ length: 7 }, (_, i) => localDate(2026, 3, 23 + i)
 /** Wednesday 2026-03-25, 10:30 local */
 const FROZEN_TODAY = new Date(2026, 2, 25, 10, 30, 0);
 
+// Noon ISO strings for each day of the fixture week (avoids DST edge cases).
+const MON_NOON = noonLocalISO(2026, 3, 23);
+const TUE_NOON = noonLocalISO(2026, 3, 24);
+const WED_NOON = noonLocalISO(2026, 3, 25);
+const SAT_NOON = noonLocalISO(2026, 3, 28);
+const SUN_NOON = noonLocalISO(2026, 3, 29);
+const NEXT_MON_NOON = noonLocalISO(2026, 4, 6);
+
+// Drag geometry — must stay in sync with startWeekDrag's stubRect/pointerDown calls.
+// Block top = 0; press at clientY 5 → offsetY = 5. Grid top = 0.
+// Release clientY = target_hour * HOUR_HEIGHT_PX + offsetY.
+const DRAG_PRESS_CLIENT_Y = 5;
+const NOON_SNAP_Y = 12 * HOUR_HEIGHT_PX + DRAG_PRESS_CLIENT_Y; // 725 — snaps chunk to noon
+const FIVE_AM_SNAP_Y = 5 * HOUR_HEIGHT_PX + DRAG_PRESS_CLIENT_Y; // 305 — snaps chunk to 5:00
+
 async function importWeekView() {
   const mod = await import('./WeekView.svelte');
   return mod.default;
@@ -113,7 +129,7 @@ function daysAroundToday(today: Date): Date[] {
 /** Saturday 2026-03-28 = index 5 in WEEK_DAYS, noon–1pm local */
 function satExternal(overrides: Partial<ExternalEvent> = {}): ExternalEvent {
   return externalEventFixture({
-    start_time: noonLocalISO(2026, 3, 28),
+    start_time: SAT_NOON,
     end_time: new Date(2026, 2, 28, 13, 0, 0).toISOString(),
     ...overrides,
   });
@@ -128,6 +144,11 @@ describe('WeekView — column headers', () => {
 
   const headerCases = [
     { index: 0, expectedDay: 23, label: 'Monday (index 0)' },
+    { index: 1, expectedDay: 24, label: 'Tuesday (index 1)' },
+    { index: 2, expectedDay: 25, label: 'Wednesday (index 2)' },
+    { index: 3, expectedDay: 26, label: 'Thursday (index 3)' },
+    { index: 4, expectedDay: 27, label: 'Friday (index 4)' },
+    { index: 5, expectedDay: 28, label: 'Saturday (index 5)' },
     { index: 6, expectedDay: 29, label: 'Sunday (index 6)' },
   ];
 
@@ -150,10 +171,6 @@ describe('WeekView — column headers', () => {
 });
 
 describe('WeekView — today highlighting', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   // JS: 0=Sun, 1=Mon … 6=Sat; shift so Mon=0 to get ISO week start offset.
   const isoOffset = (FROZEN_TODAY.getDay() + 6) % 7;
   const frozenWeekDays = Array.from({ length: 7 }, (_, i) => {
@@ -199,24 +216,20 @@ describe('WeekView — per-column filtering', () => {
   it.each([
     {
       label: 'single Monday item',
-      items: [
-        baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 23), task_title: 'Monday Task' }),
-      ],
+      items: [baseItem({ id: 'c1', start_time: MON_NOON, task_title: 'Monday Task' })],
       titlesByColumn: { 0: ['Monday Task'] } as Record<number, string[]>,
     },
     {
       label: 'single Sunday item',
-      items: [
-        baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 29), task_title: 'Sunday Task' }),
-      ],
+      items: [baseItem({ id: 'c1', start_time: SUN_NOON, task_title: 'Sunday Task' })],
       titlesByColumn: { 6: ['Sunday Task'] } as Record<number, string[]>,
     },
     {
       label: 'multi-day items',
       items: [
-        baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 23), task_title: 'Task Mon' }),
-        baseItem({ id: 'c2', start_time: noonLocalISO(2026, 3, 25), task_title: 'Task Wed' }),
-        baseItem({ id: 'c3', start_time: noonLocalISO(2026, 3, 29), task_title: 'Task Sun' }),
+        baseItem({ id: 'c1', start_time: MON_NOON, task_title: 'Task Mon' }),
+        baseItem({ id: 'c2', start_time: WED_NOON, task_title: 'Task Wed' }),
+        baseItem({ id: 'c3', start_time: SUN_NOON, task_title: 'Task Sun' }),
       ],
       titlesByColumn: { 0: ['Task Mon'], 2: ['Task Wed'], 6: ['Task Sun'] } as Record<
         number,
@@ -226,7 +239,7 @@ describe('WeekView — per-column filtering', () => {
     {
       label: 'multiple items same day',
       items: [
-        baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 24), task_title: 'Tue Task 1' }),
+        baseItem({ id: 'c1', start_time: TUE_NOON, task_title: 'Tue Task 1' }),
         baseItem({
           id: 'c2',
           start_time: new Date(2026, 2, 24, 15, 0, 0).toISOString(),
@@ -251,7 +264,7 @@ describe('WeekView — per-column filtering', () => {
     const onchunkopen = vi.fn();
     const mondayItem = baseItem({
       id: 'mon-chunk',
-      start_time: noonLocalISO(2026, 3, 23),
+      start_time: MON_NOON,
       task_title: 'Monday Task',
     });
     const opened = await isOpenAfterClick(
@@ -316,22 +329,27 @@ describe('WeekView — empty-slot creation', () => {
 });
 
 describe('WeekView — empty state', () => {
-  it('all columns show empty-state indicator when items array is empty', async () => {
-    const { container } = await renderWeek();
-    const emptyStates = container.querySelectorAll('.empty-state');
-    expect(emptyStates).toHaveLength(7);
-  });
-
-  it('empty column shows empty-state, non-empty column shows chunk blocks', async () => {
-    const items = [
-      baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 23), task_title: 'Mon Task' }),
-    ];
-    const { container } = await renderWeek({ items });
-    const emptyStates = container.querySelectorAll('.empty-state');
-    const chunkBlocks = container.querySelectorAll('.chunk-block');
-    expect(emptyStates).toHaveLength(6);
-    expect(chunkBlocks).toHaveLength(1);
-  });
+  it.each([
+    {
+      label: 'no items',
+      items: [] as AgendaItem[],
+      expectedEmpty: WEEK_DAYS.length,
+      expectedBlocks: 0,
+    },
+    {
+      label: 'one Monday item',
+      items: [baseItem({ id: 'c1', start_time: MON_NOON, task_title: 'Mon Task' })],
+      expectedEmpty: WEEK_DAYS.length - 1,
+      expectedBlocks: 1,
+    },
+  ])(
+    '$label — $expectedEmpty empty-state columns, $expectedBlocks chunk blocks',
+    async ({ items, expectedEmpty, expectedBlocks }) => {
+      const { container } = await renderWeek({ items });
+      expect(container.querySelectorAll('.empty-state')).toHaveLength(expectedEmpty);
+      expect(container.querySelectorAll('.chunk-block')).toHaveLength(expectedBlocks);
+    },
+  );
 });
 
 describe('WeekView — chunk status classes', () => {
@@ -340,7 +358,7 @@ describe('WeekView — chunk status classes', () => {
     async ({ status, expectedClass }) => {
       const item = baseItem({
         id: 'c1',
-        start_time: noonLocalISO(2026, 3, 23),
+        start_time: MON_NOON,
         status,
       });
       const { container } = await renderWeek({ items: [item] });
@@ -354,7 +372,7 @@ describe('WeekView — chunk status classes', () => {
   ])(
     'is_fixed=$isFixed → is-fixed class: $expectedHasClass',
     async ({ isFixed, expectedHasClass }) => {
-      const item = baseItem({ id: 'c1', start_time: noonLocalISO(2026, 3, 23), is_fixed: isFixed });
+      const item = baseItem({ id: 'c1', start_time: MON_NOON, is_fixed: isFixed });
       const { container } = await renderWeek({ items: [item] });
       expect(soleBlockHasClass(container, 'is-fixed')).toBe(expectedHasClass);
     },
@@ -362,16 +380,22 @@ describe('WeekView — chunk status classes', () => {
 });
 
 describe('WeekView — edge cases', () => {
-  it('renders with fewer than 7 days without crashing', async () => {
-    const threeDays = WEEK_DAYS.slice(0, 3);
-    const { container } = await renderWeek({ days: threeDays });
-    expect(container.querySelectorAll('.day-column')).toHaveLength(3);
-  });
+  it.each([
+    { label: 'fewer than 7 days', days: WEEK_DAYS.slice(0, 3), expectedColumns: 3 },
+    { label: 'an empty days array', days: [] as Date[], expectedColumns: 0 },
+  ])(
+    'renders $label without crashing — $expectedColumns columns',
+    async ({ days, expectedColumns }) => {
+      const { container } = await renderWeek({ days });
+      expect(container.querySelector('.week-view')).toBeTruthy();
+      expect(container.querySelectorAll('.day-column')).toHaveLength(expectedColumns);
+    },
+  );
 
   it('item outside the displayed week does not appear in any column', async () => {
     const outsideItem = baseItem({
       id: 'outside',
-      start_time: noonLocalISO(2026, 4, 6), // Next week
+      start_time: NEXT_MON_NOON, // Next week
       task_title: 'Outside Task',
     });
     const { container } = await renderWeek({ items: [outsideItem] });
@@ -381,18 +405,12 @@ describe('WeekView — edge cases', () => {
   it('handles empty task_title gracefully', async () => {
     const item = baseItem({
       id: 'c1',
-      start_time: noonLocalISO(2026, 3, 23),
+      start_time: MON_NOON,
       task_title: '',
     });
     const { container } = await renderWeek({ items: [item] });
     // Block still renders — empty title is a valid edge case
     expect(container.querySelectorAll('.chunk-block')).toHaveLength(1);
-  });
-
-  it('renders with empty days array without crashing', async () => {
-    const { container } = await renderWeek({ days: [] });
-    expect(container.querySelector('.week-view')).toBeTruthy();
-    expect(container.querySelectorAll('.day-column')).toHaveLength(0);
   });
 });
 
@@ -455,33 +473,28 @@ describe('WeekView — data-column-date attribute', () => {
     }
   });
 
-  const columnEpochCases = WEEK_DAYS.map((day, index) => ({
-    index,
-    expectedEpoch: day.getTime(),
-    label: day.toDateString(),
-  }));
-
-  it.each(columnEpochCases)(
-    'column $index ($label) has data-column-date equal to day epoch $expectedEpoch',
-    async ({ index, expectedEpoch }) => {
+  it.each(
+    WEEK_DAYS.map((day, index) => ({
+      index,
+      label: day.toDateString(),
+      expectedEpoch: day.getTime(),
+      expectedYear: day.getFullYear(),
+      expectedMonth: day.getMonth(),
+      expectedDate: day.getDate(),
+    })),
+  )(
+    'column $index ($label) data-column-date — epoch $expectedEpoch parses to $expectedYear/$expectedMonth/$expectedDate',
+    async ({ index, expectedEpoch, expectedYear, expectedMonth, expectedDate }) => {
       const { container } = await renderWeek();
       const columns = container.querySelectorAll('.day-column');
       const epoch = Number(columns[index].getAttribute('data-column-date'));
       expect(epoch).toBe(expectedEpoch);
+      const recovered = new Date(epoch);
+      expect(recovered.getFullYear()).toBe(expectedYear);
+      expect(recovered.getMonth()).toBe(expectedMonth);
+      expect(recovered.getDate()).toBe(expectedDate);
     },
   );
-
-  it('data-column-date epoch can be parsed back to the original date', async () => {
-    const { container } = await renderWeek();
-    const columns = container.querySelectorAll('.day-column');
-    for (let i = 0; i < columns.length; i++) {
-      const epoch = Number(columns[i].getAttribute('data-column-date'));
-      const recovered = new Date(epoch);
-      expect(recovered.getFullYear()).toBe(WEEK_DAYS[i]!.getFullYear());
-      expect(recovered.getMonth()).toBe(WEEK_DAYS[i]!.getMonth());
-      expect(recovered.getDate()).toBe(WEEK_DAYS[i]!.getDate());
-    }
-  });
 
   it('with fewer than 7 days each column still carries a distinct data-column-date', async () => {
     const threeDays = WEEK_DAYS.slice(0, 3);
@@ -498,37 +511,33 @@ describe('WeekView — past-wash', () => {
     vi.useRealTimers();
   });
 
-  it('past columns have full-height wash, today partial, future none', async () => {
-    // Mon (index 0) and Tue (index 1) are past → height 1440px.
-    // Wed (index 2) is today at 10:30 → height 630px.
-    // Thu–Sun (indices 3–6) are future → no .past-wash element.
-    const { container } = await renderWeekAt(FROZEN_TODAY);
-
-    const columns = container.querySelectorAll('.day-column');
-    expect(columns).toHaveLength(7);
-
-    const monWash = columns[0].querySelector('.past-wash') as HTMLElement | null;
-    expect(monWash).toBeTruthy();
-    expect(monWash!.style.height).toBe('1440px');
-
-    const tueWash = columns[1].querySelector('.past-wash') as HTMLElement | null;
-    expect(tueWash).toBeTruthy();
-    expect(tueWash!.style.height).toBe('1440px');
-
-    const wedWash = columns[2].querySelector('.past-wash') as HTMLElement | null;
-    expect(wedWash).toBeTruthy();
-    expect(wedWash!.style.height).toBe('630px');
-
-    for (let i = 3; i < 7; i++) {
-      expect(columns[i].querySelector('.past-wash')).toBeNull();
-    }
-  });
+  it.each([
+    { columnIndex: 0, expectedHeight: '1440px', label: 'Monday (full past)' },
+    { columnIndex: 1, expectedHeight: '1440px', label: 'Tuesday (full past)' },
+    { columnIndex: 2, expectedHeight: '630px', label: 'Wednesday (partial, today)' },
+    { columnIndex: 3, expectedHeight: null, label: 'Thursday (future)' },
+    { columnIndex: 4, expectedHeight: null, label: 'Friday (future)' },
+    { columnIndex: 5, expectedHeight: null, label: 'Saturday (future)' },
+    { columnIndex: 6, expectedHeight: null, label: 'Sunday (future)' },
+  ])(
+    'past-wash column $columnIndex ($label) — height $expectedHeight',
+    async ({ columnIndex, expectedHeight }) => {
+      const { container } = await renderWeekAt(FROZEN_TODAY);
+      const columns = container.querySelectorAll('.day-column');
+      const wash = columns[columnIndex].querySelector('.past-wash') as HTMLElement | null;
+      if (expectedHeight === null) {
+        expect(wash).toBeNull();
+      } else {
+        expect(wash).toBeTruthy();
+        expect(wash!.style.height).toBe(expectedHeight);
+      }
+    },
+  );
 
   it('past-wash elements are aria-hidden', async () => {
     const { container } = await renderWeekAt(FROZEN_TODAY);
 
     const washes = container.querySelectorAll('.past-wash');
-    // There should be washes for Mon, Tue, and Wed (today)
     expect(washes).toHaveLength(3);
     for (const w of washes) {
       expect(w.getAttribute('aria-hidden')).toBe('true');
@@ -564,7 +573,7 @@ async function startWeekDrag(
 ): Promise<{ container: HTMLElement; daycols: HTMLElement }> {
   const item = baseItem({
     id: 'c1',
-    start_time: noonLocalISO(2026, 3, 23), // Monday noon
+    start_time: MON_NOON, // Monday noon
     task_title: 'Mon Task',
   });
   const { container } = await renderWeek({ items: [item], ...props });
@@ -576,7 +585,12 @@ async function startWeekDrag(
   // Block has real height so pointerdown is read as a move, not a resize.
   stubRect(block, fakeRect(100, 200, 0, 60));
 
-  await fireEvent.pointerDown(block, { button: 0, pointerId: 1, clientX: 120, clientY: 5 });
+  await fireEvent.pointerDown(block, {
+    button: 0,
+    pointerId: 1,
+    clientX: 120,
+    clientY: DRAG_PRESS_CLIENT_Y,
+  });
   await tick();
   return { container, daycols };
 }
@@ -626,13 +640,11 @@ describe('WeekView — cross-week drag', () => {
   it('commits a move via onchunkmove when dropped after moving', async () => {
     const { container, daycols, onchunkmove, onchunkopen } = await startMoveDrag();
 
-    // Move down the column (offsetY=5, so clientY 305 → ~5:00) then drop.
-    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 450, clientY: 305 });
-    await fireEvent.pointerUp(daycols, { pointerId: 1, clientX: 450, clientY: 305 });
+    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 450, clientY: FIVE_AM_SNAP_Y });
+    await fireEvent.pointerUp(daycols, { pointerId: 1, clientX: 450, clientY: FIVE_AM_SNAP_Y });
 
-    // The browser's follow-up click still lands on the chunk's own (unmoved)
-    // element — pointer capture on daycols does not retarget click — so it must
-    // not reopen the task after a committed move.
+    // On a hit-testing engine the follow-up click lands on the chunk's own
+    // (unmoved) element; it must not reopen the task after a committed move.
     const block = container.querySelector('.chunk-block') as HTMLElement;
     await fireEvent.click(block);
 
@@ -642,32 +654,37 @@ describe('WeekView — cross-week drag', () => {
     expect(chunkId).toBe('c1');
   });
 
-  it('treats a drag that never moves as a click (opens the task)', async () => {
-    const { container, daycols, onchunkmove, onchunkopen } = await startMoveDrag();
+  // Follow-up click destination is engine-dependent; the outcome must not depend on it.
+  it.each([
+    { label: 'the capturing container (Pointer Events L3)', clickOn: 'container' },
+    { label: 'the chunk itself (hit-testing engines)', clickOn: 'chunk' },
+  ])(
+    'a release without movement opens the task once when the follow-up click lands on $label',
+    async ({ clickOn }) => {
+      const { container, daycols, onchunkmove, onchunkopen } = await startMoveDrag();
+      expect(daycols.setPointerCapture).toHaveBeenCalledWith(1);
 
-    // Release without any pointermove → no movement. The container's pointerup
-    // commits nothing; the browser's own follow-up click (not retargeted by
-    // pointer capture) lands on the chunk and opens it — exactly once.
-    await fireEvent.pointerUp(daycols, { pointerId: 1, clientX: 120, clientY: 5 });
-    const block = container.querySelector('.chunk-block') as HTMLElement;
-    await fireEvent.click(block);
+      await fireEvent.pointerUp(daycols, {
+        pointerId: 1,
+        clientX: 120,
+        clientY: DRAG_PRESS_CLIENT_Y,
+      });
+      const block = container.querySelector('.chunk-block') as HTMLElement;
+      await fireEvent.click(clickOn === 'chunk' ? block : daycols);
 
-    expect(onchunkopen).toHaveBeenCalledTimes(1);
-    expect(onchunkopen).toHaveBeenCalledWith('task-1');
-    expect(onchunkmove).not.toHaveBeenCalled();
-  });
+      expect(onchunkopen).toHaveBeenCalledTimes(1);
+      expect(onchunkopen).toHaveBeenCalledWith('task-1');
+      expect(onchunkmove).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not open or move when a drag wanders and returns to the same slot', async () => {
     const { container, daycols, onchunkmove, onchunkopen } = await startMoveDrag();
 
-    // Drag well away from the press point so the gesture is flagged as a real
-    // drag, then bring the snapped slot back to the original (clientY 725 → noon,
-    // the chunk's start) before releasing. The release point still sits over the
-    // chunk's own (unmoved) element — its "shadow" at the original slot — so the
-    // browser's follow-up click lands there and must be ignored.
-    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 120, clientY: 305 });
-    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 120, clientY: 725 });
-    await fireEvent.pointerUp(daycols, { pointerId: 1, clientX: 120, clientY: 725 });
+    // Drag away then snap back to the original slot (noon); must not open or move.
+    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 120, clientY: FIVE_AM_SNAP_Y });
+    await fireEvent.pointerMove(daycols, { pointerId: 1, clientX: 120, clientY: NOON_SNAP_Y });
+    await fireEvent.pointerUp(daycols, { pointerId: 1, clientX: 120, clientY: NOON_SNAP_Y });
     const block = container.querySelector('.chunk-block') as HTMLElement;
     await fireEvent.click(block);
 
@@ -718,13 +735,18 @@ describe('WeekView — external events', () => {
     },
   );
 
-  it('declined external event has the --declined modifier class', async () => {
-    const { container } = await renderWeek({ externalEvents: [satExternal({ declined: true })] });
-
-    const block = container.querySelector('.external-event');
-    expect(block).toBeTruthy();
-    expect(block!.classList.contains('external-event--declined')).toBe(true);
-  });
+  it.each([
+    { declined: true, expectedHasClass: true },
+    { declined: false, expectedHasClass: false },
+  ])(
+    'external event declined=$declined — --declined class: $expectedHasClass',
+    async ({ declined, expectedHasClass }) => {
+      const { container } = await renderWeek({ externalEvents: [satExternal({ declined })] });
+      const block = container.querySelector('.external-event');
+      expect(block).toBeTruthy();
+      expect(block!.classList.contains('external-event--declined')).toBe(expectedHasClass);
+    },
+  );
 
   it('empty-state indicator is not affected by external events alone', async () => {
     const { container } = await renderWeek({ externalEvents: [satExternal()] });

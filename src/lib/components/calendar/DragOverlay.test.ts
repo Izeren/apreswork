@@ -25,6 +25,7 @@ async function getDragState() {
 function baseDragInfo(overrides: Partial<DragInfo> = {}): DragInfo {
   return {
     chunkId: 'chunk-1',
+    taskId: 'task-1',
     taskTitle: 'Test Task',
     originalStartTime: new Date(2026, 2, 28, 9, 0, 0).toISOString(),
     originalEndTime: new Date(2026, 2, 28, 10, 0, 0).toISOString(),

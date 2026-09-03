@@ -28,6 +28,9 @@ export const OVERLAP_GAP_PX = 4;
 /** Smallest box height ChunkBlock paints for a chunk, whatever its real duration. */
 export const CHUNK_MIN_HEIGHT_PX = 22;
 
+/** Bottom zone in px — a pointer within this distance from the block bottom triggers resize, not move. */
+export const RESIZE_HANDLE_PX = 8;
+
 export const TIME_LABEL_MIN_HEIGHT_PX = 42;
 
 const MS_PER_HOUR = 60 * 60 * 1000;
