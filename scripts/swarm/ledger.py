@@ -94,8 +94,30 @@ def rejections_for(ledger: dict, rel: str) -> list[dict]:
     found = ledger.get(rel, {}).get("findings", {})
     return [{"id": fid, **f} for fid, f in sorted(found.items())]
 
+def _glob_to_re(pattern: str) -> re.Pattern[str]:
+    """Convert a glob pattern (with ** multi-level support) to a compiled regex."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i : i + 3] == "**/":
+            parts.append("(?:.+/)?")
+            i += 3
+        elif pattern[i : i + 2] == "**":
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(parts))
+
 def in_scope(rel: str, scope: list[str]) -> bool:
-    return any(PurePosixPath(rel).full_match(p) for p in scope)
+    return any(_glob_to_re(p).fullmatch(rel) for p in scope)
 
 def finders_for(rel: str, config: dict) -> list[str]:
     """The finder set this file owes. First match wins, so declaration order matters:
