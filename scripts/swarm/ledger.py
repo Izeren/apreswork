@@ -95,7 +95,6 @@ def rejections_for(ledger: dict, rel: str) -> list[dict]:
     return [{"id": fid, **f} for fid, f in sorted(found.items())]
 
 def _glob_to_re(pattern: str) -> re.Pattern[str]:
-    """Convert a glob pattern (with ** multi-level support) to a compiled regex."""
     parts: list[str] = []
     i = 0
     while i < len(pattern):
