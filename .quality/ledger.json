@@ -1,4 +1,8 @@
 {
+  "scripts/swarm/ledger.py": {
+    "blob": "8960df72b2ee5d8155b92c5108939577d9982233",
+    "findings": {}
+  },
   "src-tauri/src/api/http_server/mod.rs": {
     "blob": "d0414c6d2cd738ee12704c19552c078a44821bd2",
     "findings": {
