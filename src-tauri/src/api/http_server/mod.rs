@@ -863,9 +863,8 @@ impl ServerConfig {
             })
             .unwrap_or(DEFAULT_API_PORT);
 
-        let enabled = env_var("APRESWORK_API_ENABLED")
-            .map(|v| v.to_lowercase() != "false")
-            .unwrap_or(true);
+        let enabled =
+            env_var("APRESWORK_API_ENABLED").map_or(true, |v| v.to_lowercase() != "false");
 
         Self { port, enabled }
     }

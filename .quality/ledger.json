@@ -1,6 +1,6 @@
 {
   "src-tauri/src/api/http_server/mod.rs": {
-    "blob": "028ac6e439c837556e4bf9153437cda21c1f1a91",
+    "blob": "d0414c6d2cd738ee12704c19552c078a44821bd2",
     "findings": {
       "83a1b624-0500-4139-bf56-b2b6778d3d0f": {
         "agent": "code-smell-nitpicker",
@@ -145,7 +145,7 @@
     }
   },
   "src-tauri/src/calendar/google/tests.rs": {
-    "blob": "883c5214c23f3534ce6acb3e920d8b39c2e40b6a",
+    "blob": "e986bd23cd2cc210b29ec06ed2a81cb496a647eb",
     "findings": {}
   },
   "src-tauri/src/calendar/google_http.rs": {
@@ -814,7 +814,7 @@
     "findings": {}
   },
   "src-tauri/src/services/scheduling/tests/stale_locks.rs": {
-    "blob": "66297c732fcc5792094a2f1e839ff98db442588d",
+    "blob": "5ea0b2c5845bbc6b31fdce996355f81b819827bd",
     "findings": {
       "10e9df32-568d-41e8-b0d2-115e49e2afdb": {
         "agent": "code-smell-nitpicker",
@@ -1617,7 +1617,7 @@
     }
   },
   "src/lib/components/calendar/dragState.test.ts": {
-    "blob": "41524b1893bc13930cb42a220769391dbe47e552",
+    "blob": "f4734e61f061e314b873f8a778164965b2dfb463",
     "findings": {}
   },
   "src/lib/components/calendar/eventDialogShared.test.ts": {
