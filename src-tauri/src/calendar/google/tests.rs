@@ -196,14 +196,18 @@ fn wait_for_status_change(provider: &GoogleCalendarSync, max_wait: Duration) -> 
     provider.wait_status_change(max_wait)
 }
 
-fn run_exchange_assert_not_connected(provider: &GoogleCalendarSync, msg: &str) {
+fn begin_auth_and_extract(provider: &GoogleCalendarSync) -> (String, u16) {
     let consent_url = provider
         .begin_auth(
             crate::test_support::test_now(),
             crate::test_support::test_instant_now(),
         )
         .expect("begin_auth");
-    let (state, port) = extract_state_and_port(&consent_url);
+    extract_state_and_port(&consent_url)
+}
+
+fn run_exchange_assert_not_connected(provider: &GoogleCalendarSync, msg: &str) {
+    let (state, port) = begin_auth_and_extract(provider);
     let redirect_query = format!("state={state}&code=4%2Fcode");
     send_redirect(port, &redirect_query);
     let final_status = wait_for_status_change(provider, AUTH_TIMEOUT_DEFAULT);
@@ -252,10 +256,7 @@ fn begin_auth_returns_url_with_required_params() {
         Some("consent")
     );
 
-    let scope_str = params
-        .get("scope")
-        .map(|s| s.as_ref().to_owned())
-        .unwrap_or_default();
+    let scope_str = params.get("scope").map_or("", |s| s.as_ref());
     assert!(
         scope_str.contains("calendar.app.created"),
         "missing app.created scope"
@@ -302,13 +303,7 @@ fn happy_path_connects_and_saves_token() {
     let (token_url, mock_handle) = mock_token_endpoint(mock_body, 200);
     let provider = test_provider(keyring.clone(), &token_url);
 
-    let consent_url = provider
-        .begin_auth(
-            crate::test_support::test_now(),
-            crate::test_support::test_instant_now(),
-        )
-        .expect("begin_auth");
-    let (state, port) = extract_state_and_port(&consent_url);
+    let (state, port) = begin_auth_and_extract(&provider);
 
     let redirect_query = format!("state={state}&code=4%2Fcode");
     let response = send_redirect(port, &redirect_query);
@@ -360,13 +355,7 @@ fn failure_redirect_leaves_not_connected(redirect_suffix: &str) {
     let (token_url, mock_handle) = mock_token_endpoint("{}", 200);
     let provider = test_provider_with_timeout(keyring.clone(), &token_url, AUTH_TIMEOUT_SHORT);
 
-    let consent_url = provider
-        .begin_auth(
-            crate::test_support::test_now(),
-            crate::test_support::test_instant_now(),
-        )
-        .expect("begin_auth");
-    let (state, port) = extract_state_and_port(&consent_url);
+    let (state, port) = begin_auth_and_extract(&provider);
 
     let query = redirect_suffix.replace("{state}", &state);
     send_redirect(port, &query);
@@ -574,7 +563,6 @@ fn access_token_refresh_updates_cache() {
         .expect("access_token");
     assert_eq!(at, "new-at");
 
-    // The provider that refreshed must have its own cache populated.
     assert_eq!(
         provider.cached_access_token().as_deref(),
         Some("new-at"),
@@ -625,7 +613,7 @@ fn access_token_refresh_missing_refresh_token_returns_err() {
 
     keyring
         .save(&PersistedCredential {
-            refresh_token: None, // no refresh token
+            refresh_token: None,
             expires_at: crate::test_support::test_now() - chrono::Duration::hours(1),
         })
         .expect("seed credential without refresh token");

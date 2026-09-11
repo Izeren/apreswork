@@ -15,7 +15,19 @@ use crate::test_support::{
 };
 use crate::traits::storage::{ChunkStore, TaskStore};
 
-fn store_with_task_and_fixed_chunk_at(end_offset: Duration) -> (SqliteStore, String, String) {
+fn run_reschedule_get_task_status(store: &SqliteStore, task_id: &str) -> TaskStatus {
+    reschedule(store, &MockScheduler::empty(), test_now()).expect("reschedule");
+    store
+        .get_task(task_id)
+        .unwrap()
+        .expect("task exists")
+        .status
+}
+
+fn store_with_task_and_chunk_at_status(
+    end_offset: Duration,
+    chunk_status: ChunkStatus,
+) -> (SqliteStore, String, String) {
     let store = test_store_with_config(default_config());
     let now = test_now();
 
@@ -24,24 +36,37 @@ fn store_with_task_and_fixed_chunk_at(end_offset: Duration) -> (SqliteStore, Str
 
     let start = now + end_offset - Duration::hours(1);
     let end = now + end_offset;
-    let chunk = make_fixed_chunk_at("chunk-1", "task-1", start, end);
+    let mut chunk = make_fixed_chunk_at("chunk-1", "task-1", start, end);
+    chunk.status = chunk_status;
+    if chunk.status == ChunkStatus::Completed {
+        chunk.completed_at = Some(end);
+    }
     seed_chunk(&store, &chunk);
 
     (store, task.id, chunk.id)
 }
 
+fn store_with_task_and_fixed_chunk_at(end_offset: Duration) -> (SqliteStore, String, String) {
+    store_with_task_and_chunk_at_status(end_offset, ChunkStatus::Scheduled)
+}
+
 // Stale (>4h) → unlocked; boundary (==4h) → stays locked (strict <); fresh → stays locked.
-#[test_case(Duration::hours(-5), false ; "stale_5h_unlocked")]
-#[test_case(Duration::hours(-4), true  ; "boundary_exactly_4h_stays_locked")]
-#[test_case(Duration::hours(-3), true  ; "recent_3h_stays_locked")]
-fn release_stale_fixed_locks_is_fixed_after_release(end_offset: Duration, expected_fixed: bool) {
-    let (store, _, chunk_id) = store_with_task_and_fixed_chunk_at(end_offset);
+#[test_case(Duration::hours(-5), ChunkStatus::Scheduled, false ; "stale_5h_unlocked")]
+#[test_case(Duration::hours(-4), ChunkStatus::Scheduled, true  ; "boundary_exactly_4h_stays_locked")]
+#[test_case(Duration::hours(-3), ChunkStatus::Scheduled, true  ; "recent_3h_stays_locked")]
+#[test_case(Duration::hours(-5), ChunkStatus::Completed, true  ; "stale_5h_completed_stays_locked")]
+fn release_stale_fixed_locks_is_fixed_after_release(
+    end_offset: Duration,
+    chunk_status: ChunkStatus,
+    expected_fixed: bool,
+) {
+    let (store, _, _) = store_with_task_and_chunk_at_status(end_offset, chunk_status);
     let now = test_now();
 
     release_stale_fixed_locks(&store, now).expect("release_stale_fixed_locks");
 
-    let chunk = store.get_chunk(&chunk_id).unwrap().expect("chunk exists");
-    assert_eq!(chunk.is_fixed, expected_fixed);
+    let loaded = store.get_chunk("chunk-1").unwrap().expect("chunk exists");
+    assert_eq!(loaded.is_fixed, expected_fixed);
 }
 
 #[test]
@@ -59,37 +84,10 @@ fn release_stale_fixed_locks_updates_timestamp_when_unlocked() {
 }
 
 #[test]
-fn release_stale_fixed_locks_does_not_touch_completed_chunks() {
-    let store = test_store_with_config(default_config());
-    let now = test_now();
-
-    let task = make_task("task-1", TaskStatus::Scheduled);
-    seed_task(&store, &task);
-
-    // Completed chunk ending 5h ago — must never be unlocked.
-    let start = now - Duration::hours(6);
-    let end = now - Duration::hours(5);
-    let mut chunk = make_fixed_chunk_at("chunk-1", "task-1", start, end);
-    chunk.status = ChunkStatus::Completed;
-    chunk.completed_at = Some(end);
-    seed_chunk(&store, &chunk);
-
-    release_stale_fixed_locks(&store, now).expect("release_stale_fixed_locks");
-
-    let loaded = store.get_chunk(&chunk.id).unwrap().expect("chunk exists");
-    assert!(loaded.is_fixed, "completed chunks must not be unlocked");
-}
-
-#[test]
 fn reschedule_releases_stale_lock_and_reverts_task_to_pending() {
     let (store, task_id, _) = store_with_task_and_fixed_chunk_at(Duration::hours(-5));
-    let now = test_now();
-
-    reschedule(&store, &MockScheduler::empty(), now).expect("reschedule");
-
-    let task = store.get_task(&task_id).unwrap().expect("task exists");
     assert_eq!(
-        task.status,
+        run_reschedule_get_task_status(&store, &task_id),
         TaskStatus::Pending,
         "task with stale fixed chunk should revert to Pending after reschedule"
     );
@@ -98,17 +96,11 @@ fn reschedule_releases_stale_lock_and_reverts_task_to_pending() {
 #[test]
 fn reschedule_keeps_fresh_fixed_chunk_and_task_scheduled() {
     let (store, task_id, chunk_id) = store_with_task_and_fixed_chunk_at(Duration::hours(-3));
-    let now = test_now();
-
-    reschedule(&store, &MockScheduler::empty(), now).expect("reschedule");
-
-    let task = store.get_task(&task_id).unwrap().expect("task exists");
     assert_eq!(
-        task.status,
+        run_reschedule_get_task_status(&store, &task_id),
         TaskStatus::Scheduled,
         "task with fresh fixed chunk should stay Scheduled after reschedule"
     );
-
     let chunk = store.get_chunk(&chunk_id).unwrap().expect("chunk exists");
     assert!(chunk.is_fixed, "fresh fixed chunk should retain its lock");
 }

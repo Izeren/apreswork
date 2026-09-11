@@ -38,6 +38,16 @@ const baseResizeInfo = (): ResizeInfo => ({
   columnDate: MARCH_28,
 });
 
+// We can't get truly fresh instances due to module caching, so test dragState singleton carefully.
+let dragState: import('./dragState.svelte').DragState;
+async function resetDragState(): Promise<void> {
+  const mod = await import('./dragState.svelte');
+  dragState = mod.dragState as import('./dragState.svelte').DragState;
+  dragState.cancel();
+  dragState.cancelResize();
+  dragState.cancelCreate();
+}
+
 describe('snapMinutes', () => {
   const cases = [
     { raw: 0, dur: 60, expected: 0, label: 'exact zero' },
@@ -170,16 +180,7 @@ describe('getCreateBounds', () => {
 });
 
 describe('DragState', () => {
-  // We can't get truly fresh instances due to module caching, so test dragState singleton carefully.
-  let dragState: import('./dragState.svelte').DragState;
-
-  beforeEach(async () => {
-    const mod = await import('./dragState.svelte');
-    dragState = mod.dragState as import('./dragState.svelte').DragState;
-    dragState.cancel();
-    dragState.cancelResize();
-    dragState.cancelCreate();
-  });
+  beforeEach(resetDragState);
 
   const baseDragInfo = (): import('./dragState.svelte').DragInfo => ({
     chunkId: 'chunk-1',
@@ -362,15 +363,7 @@ describe('DragState', () => {
 });
 
 describe('DragState — resize', () => {
-  let dragState: import('./dragState.svelte').DragState;
-
-  beforeEach(async () => {
-    const mod = await import('./dragState.svelte');
-    dragState = mod.dragState as import('./dragState.svelte').DragState;
-    dragState.cancel();
-    dragState.cancelResize();
-    dragState.cancelCreate();
-  });
+  beforeEach(resetDragState);
 
   describe('updateResizePosition', () => {
     it.each([
