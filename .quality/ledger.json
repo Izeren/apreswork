@@ -497,7 +497,7 @@
     "findings": {}
   },
   "src-tauri/src/lib.rs": {
-    "blob": "185ea79b9eae258d4a4a643675011a3a4bd9dcfe",
+    "blob": "dc7c829f299dcdf888543c97051345769b28bc22",
     "findings": {}
   },
   "src-tauri/src/main.rs": {
