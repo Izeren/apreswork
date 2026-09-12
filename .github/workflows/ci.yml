@@ -120,7 +120,6 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     needs: rust
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,6 +170,7 @@ jobs:
         env:
           TZ: UTC
           COVERAGE_DIFF_BASE: ${{ github.event.pull_request.base.sha }}
+          # base.sha is empty on push; script defaults to HEAD (harmless empty diff)
         run: bash scripts/coverage.sh
 
       - name: Upload to Codecov
