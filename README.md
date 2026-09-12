@@ -64,6 +64,19 @@ of version control.
   DNS-rebinding defence. `bash scripts/api.sh` with no arguments lists the wrapped
   commands.
 
+  **Security note.** The `Host`-header check blocks web-page DNS-rebinding attacks.
+  A browser sends the attacker's hostname in `Host`, so the loopback allowlist
+  (`127.0.0.1`, `localhost`) rejects it. The check does not block a co-resident
+  local process. A local process can connect directly and supply a valid `Host`
+  value. Any local process can therefore read, create, change, or delete tasks.
+  It can also call `POST /api/auth/google/begin`, which returns the OAuth consent
+  URL as JSON and does not open a browser. For a single-user desktop app at v0.1
+  this is a defensible posture. A process of the same user with local socket
+  access already has broad access to the user account and data directory. On a
+  multi-user machine, any local user can connect to `127.0.0.1`. An optional
+  bearer-token auth mode is a possible future addition. The app does not implement
+  it yet.
+
 ## Development
 
 ```sh
