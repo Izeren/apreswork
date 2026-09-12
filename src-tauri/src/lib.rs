@@ -4,8 +4,6 @@
 #![warn(clippy::pedantic)]
 #![warn(clippy::cargo)]
 #![deny(clippy::wildcard_imports)]
-// Desktop app, not a published crate.
-#![allow(clippy::cargo_common_metadata)]
 // reqwest/oauth2 trees pin duplicate minor versions; tracked, not actionable here.
 #![allow(clippy::multiple_crate_versions)]
 
@@ -26,14 +24,13 @@ pub mod state;
 mod test_support;
 pub mod traits;
 
+const GRACEFUL_EXIT_BACKUP_TIMEOUT_SECS: u64 = 5;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// Initialize and run the Tauri application.
-///
-/// Resolves the app data/config directories, loads (or adopts) the profile
-/// registry, and registers all Tauri commands. The store, timers, and REST
-/// server start in `profiles::activate::activate_profile` — at startup for
-/// the last-used profile; the frontend gate is only a fallback (activation
-/// failure or an empty registry).
+/// The store, timers, and REST server start in
+/// `profiles::activate::activate_profile` — at startup for the last-used
+/// profile; the frontend gate is only a fallback (activation failure or an
+/// empty registry).
 ///
 /// # Panics
 ///
@@ -122,9 +119,8 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
 
-            // Profiles (M13): load the registry, adopting pre-profiles data
-            // on first run. Data-touching activation (DB open, restore check)
-            // happens in activate_profile — only after a profile is picked
+            // Data-touching activation (DB open, restore check) happens in
+            // activate_profile — only after a profile is picked
             // (profiles::activate module docs).
             let registry =
                 profiles::adoption::load_or_adopt(&data_dir, &config_dir, chrono::Utc::now())?;
@@ -201,7 +197,7 @@ pub fn run() {
                         app_state.store.clone(),
                         app_state.backup.clone(),
                         app_state.profile_dir.clone(),
-                        std::time::Duration::from_secs(5),
+                        std::time::Duration::from_secs(GRACEFUL_EXIT_BACKUP_TIMEOUT_SECS),
                         chrono::Utc::now(),
                     );
                 }

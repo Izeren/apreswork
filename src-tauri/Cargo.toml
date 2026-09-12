@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Schedule and track tasks for outside working hours"
 authors = ["izeren"]
 license = "Apache-2.0"
-repository = ""
+repository = "https://github.com/Izeren/apreswork"
+readme = "../README.md"
+keywords = ["scheduler", "task-manager", "calendar", "planner", "leisure"]
+categories = ["gui", "date-and-time"]
 edition = "2021"
 rust-version = "1.85.0"
 
