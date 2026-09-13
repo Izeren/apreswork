@@ -27,8 +27,7 @@ where
 {
     store_fn()
         .and_then(|s| s.load())
-        .map(|opt| opt.is_some())
-        .unwrap_or(false)
+        .is_ok_and(|opt| opt.is_some())
 }
 
 #[tauri::command]
