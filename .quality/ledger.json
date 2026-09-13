@@ -341,7 +341,7 @@
     "findings": {}
   },
   "src-tauri/src/commands/credentials_commands.rs": {
-    "blob": "d247e9800d40f5989052e3f552f505d59368cf00",
+    "blob": "d748a7624f21ddaf5721d50bc79ce752370a2b8b",
     "findings": {
       "63d28a5c-1130-4043-88a2-54790cb0f8c6": {
         "agent": "code-smell-nitpicker",
