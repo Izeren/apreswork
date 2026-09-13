@@ -140,7 +140,7 @@ export function updateComment(id: string, content: string): Promise<Comment> {
   return invoke('update_comment', { id, input: { content } });
 }
 
-/** Delete a user comment (author-only; system comments are immutable). */
+/** Delete a user comment (author-only; see updateComment). */
 export function deleteComment(id: string): Promise<void> {
   return invoke('delete_comment', { id });
 }
@@ -206,7 +206,7 @@ export function openExternalUrl(url: string): Promise<void> {
   return openUrl(url);
 }
 
-/** Begin Google OAuth flow. Returns the consent URL; the loopback exchange completes in the background. */
+/** Returns the consent URL; the loopback exchange completes in the background. */
 export function beginGoogleAuth(): Promise<string> {
   return invoke('begin_google_auth');
 }
@@ -214,6 +214,16 @@ export function beginGoogleAuth(): Promise<string> {
 /** Poll the current Google auth connection status (read-only, infallible). */
 export function googleAuthStatus(): Promise<AuthStatus> {
   return invoke('google_auth_status');
+}
+
+/** Returns true when BYO OAuth client credentials are stored in the OS keyring. */
+export function googleClientCredentialsSaved(): Promise<boolean> {
+  return invoke('google_client_credentials_saved');
+}
+
+/** Validate credentials against Google, then save to the OS keyring. Reloads the active profile on success. */
+export function saveGoogleClientCredentials(clientId: string, clientSecret: string): Promise<void> {
+  return invoke('save_google_client_credentials', { clientId, clientSecret });
 }
 
 /** Revoke the stored token and clear mirrored events. Does not trigger a reschedule. */
@@ -248,11 +258,7 @@ export function getSyncStatus(): Promise<SyncStatus> {
   return invoke('get_sync_status');
 }
 
-/**
- * Create a user-owned event on `calendarId`, write it through to Google, mirror
- * it, and reschedule. Resolves to the mirrored event; callers must still refetch
- * the visible range (the reschedule may cascade other chunks).
- */
+/** Resolves to the mirrored event; callers must still refetch the visible range (the reschedule may cascade other chunks). */
 export function createUserEvent(
   calendarId: string,
   payload: UserEventPayload,
@@ -260,10 +266,7 @@ export function createUserEvent(
   return invoke('create_user_event', { calendarId, payload });
 }
 
-/**
- * Update a user-owned event, write through to Google, re-mirror, and reschedule.
- * Resolves to the re-mirrored event; callers must still refetch the visible range.
- */
+/** Resolves to the re-mirrored event; see createUserEvent. */
 export function updateUserEvent(
   calendarId: string,
   eventId: string,
@@ -272,10 +275,7 @@ export function updateUserEvent(
   return invoke('update_user_event', { calendarId, eventId, payload });
 }
 
-/**
- * Delete a user-owned event, remove its mirror row, and reschedule. Callers must
- * still refetch the visible range afterwards.
- */
+/** see createUserEvent */
 export function deleteUserEvent(calendarId: string, eventId: string): Promise<void> {
   return invoke('delete_user_event', { calendarId, eventId });
 }

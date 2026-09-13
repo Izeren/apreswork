@@ -37,6 +37,24 @@ vi.mock('../../router.svelte', () => ({
 
 const { router } = await import('../../router.svelte');
 
+const ROUTE_CALENDAR = 'calendar';
+const ROUTE_TASKS = 'tasks';
+const ROUTE_SETTINGS = 'settings';
+const ROUTE_STATUS = 'status';
+const ROUTE_PROFILES = 'profiles';
+const SHORTCUT_KEY_CALENDAR = '1';
+const SHORTCUT_KEY_TASKS = '2';
+const SHORTCUT_KEY_SETTINGS = '3';
+const SHORTCUT_KEY_STATUS = '4';
+const SHORTCUT_KEY_HELP = '?';
+const FLUSH_DIALOG_CYCLES = 2;
+const TEST_DEADLINE_TIMESTAMP = '2026-06-01T00:00:00Z';
+const TEST_EARLIEST_COMPLETION_TIMESTAMP = '2026-06-03T00:00:00Z';
+const TEST_PROFILE_CREATION_TIMESTAMP = '2026-07-01T00:00:00Z';
+const TEST_BACKUP_EXPORT_TIMESTAMP = '2026-07-12T10:00:00Z';
+const TEST_BACKUP_RESTORE_TIMESTAMP = '2026-07-12T09:30:00Z';
+const TEST_TASK_EPOCH = '2026-01-01T00:00:00Z';
+
 /** Quiet default — no restore this run. Shell AND the mounted BackupSection read it. */
 const QUIET_BACKUP_STATUS: BackupStatus = {
   enabled: false,
@@ -78,6 +96,8 @@ beforeEach(() => {
   };
 
   fakeSettingsApi = {
+    googleClientCredentialsSaved: vi.fn().mockResolvedValue(false),
+    saveGoogleClientCredentials: vi.fn(),
     googleAuthStatus: vi.fn().mockResolvedValue({ type: 'not_connected' }),
     beginGoogleAuth: vi.fn(),
     openExternalUrl: vi.fn(),
@@ -137,7 +157,7 @@ afterEach(() => {
   profileState.status = null;
   profileState.loadError = null;
   profileState.switching = false;
-  router.current = 'settings';
+  router.current = ROUTE_SETTINGS;
   resetShortcutsForTest();
 });
 
@@ -151,8 +171,18 @@ const DEADLINE_WARNING: ScheduleWarning = {
   task_title: 'Beta task',
   kind: {
     DeadlineViolation: {
-      deadline: '2026-06-01T00:00:00Z',
-      earliest_completion: '2026-06-03T00:00:00Z',
+      deadline: TEST_DEADLINE_TIMESTAMP,
+      earliest_completion: TEST_EARLIEST_COMPLETION_TIMESTAMP,
+    },
+  },
+};
+const DEADLINE_WARNING_2: ScheduleWarning = {
+  task_id: 'task-3',
+  task_title: 'Gamma task',
+  kind: {
+    DeadlineViolation: {
+      deadline: TEST_DEADLINE_TIMESTAMP,
+      earliest_completion: TEST_EARLIEST_COMPLETION_TIMESTAMP,
     },
   },
 };
@@ -171,9 +201,21 @@ describe('Shell', () => {
       expectBlocking: true,
     },
     {
+      label: 'danger-colored badge for a single blocking warning',
+      warnings: [BLOCKING_WARNING],
+      badgeLabel: /1 warning/i,
+      expectBlocking: true,
+    },
+    {
       label: 'warning-colored badge when no warning is blocking',
       warnings: [DEADLINE_WARNING],
       badgeLabel: /1 warning/i,
+      expectBlocking: false,
+    },
+    {
+      label: 'warning-colored badge for multiple non-blocking warnings',
+      warnings: [DEADLINE_WARNING, DEADLINE_WARNING_2],
+      badgeLabel: /2 warnings/i,
       expectBlocking: false,
     },
     {
@@ -190,7 +232,6 @@ describe('Shell', () => {
     } else {
       const badge = queryByLabelText(badgeLabel);
       expect(badge).toBeTruthy();
-      // Badge is its own control, NOT nested inside the nav button.
       expect(badge!.tagName).toBe('BUTTON');
       expect(getByRole('button', { name: 'Status' }).contains(badge)).toBe(false);
       expect(badge!.classList.contains('warning-badge--blocking')).toBe(expectBlocking);
@@ -198,7 +239,7 @@ describe('Shell', () => {
   });
 
   it('renders the status view when the route is "status"', async () => {
-    router.current = 'status';
+    router.current = ROUTE_STATUS;
 
     const { getByText } = render(Shell, { props: makeShellProps() });
     await flush();
@@ -215,8 +256,7 @@ describe('Shell', () => {
     expect(vi.mocked(fakeBackupApi.getBackupStatus)).toHaveBeenCalled();
   });
 
-  // Regression: the toast host was once never mounted anywhere, so every pushed
-  // toast was invisible. Assert against the rendered DOM, not the store.
+  // Regression: the toast host was once never mounted anywhere, so every pushed toast was invisible.
   it('mounts the toast host so pushed toasts are visible', async () => {
     const { getByLabelText, getByText } = render(Shell, { props: makeShellProps() });
 
@@ -230,10 +270,10 @@ describe('Shell', () => {
 
 describe('Shell — keyboard shortcuts', () => {
   it.each([
-    { key: '1', route: 'calendar' },
-    { key: '2', route: 'tasks' },
-    { key: '3', route: 'settings' },
-    { key: '4', route: 'status' },
+    { key: SHORTCUT_KEY_CALENDAR, route: ROUTE_CALENDAR },
+    { key: SHORTCUT_KEY_TASKS, route: ROUTE_TASKS },
+    { key: SHORTCUT_KEY_SETTINGS, route: ROUTE_SETTINGS },
+    { key: SHORTCUT_KEY_STATUS, route: ROUTE_STATUS },
   ])('pressing "$key" calls router.navigate with "$route"', async ({ key, route }) => {
     render(Shell, { props: makeShellProps() });
     await tick();
@@ -249,7 +289,12 @@ describe('Shell — keyboard shortcuts', () => {
 
     expect(queryByRole('dialog')).toBeNull();
 
-    await fireEvent.keyDown(window, { key: '?', shiftKey: true, bubbles: true, cancelable: true });
+    await fireEvent.keyDown(window, {
+      key: SHORTCUT_KEY_HELP,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
     await tick();
 
     expect(queryByRole('dialog')).toBeTruthy();
@@ -258,12 +303,12 @@ describe('Shell — keyboard shortcuts', () => {
 
 describe('Shell — profiles route', () => {
   it('renders the profiles view when the route is "profiles"', async () => {
-    router.current = 'profiles';
+    router.current = ROUTE_PROFILES;
 
     const { store, profileStatus } = makeTestProfileState();
     profileStatus.mockResolvedValue({
       active: { id: 'p-1', name: 'Default' },
-      profiles: [{ id: 'p-1', name: 'Default', created_at: '2026-07-01T00:00:00Z' }],
+      profiles: [{ id: 'p-1', name: 'Default', created_at: TEST_PROFILE_CREATION_TIMESTAMP }],
       last_used: 'p-1',
     });
 
@@ -294,9 +339,9 @@ describe('Shell — startup restore notice', () => {
         fakeShellApi.getBackupStatus.mockResolvedValue({
           enabled: true,
           connected: true,
-          last_export_at: '2026-07-12T10:00:00Z',
+          last_export_at: TEST_BACKUP_EXPORT_TIMESTAMP,
           last_backup_error: null,
-          restored_this_run: '2026-07-12T09:30:00Z',
+          restored_this_run: TEST_BACKUP_RESTORE_TIMESTAMP,
         }),
       check: ({ getByText }: CheckFns) => {
         expect(
@@ -338,7 +383,7 @@ describe('Shell — startup restore notice', () => {
   ])('$label', async ({ setup, check }) => {
     setup();
     const { getByText, queryByText } = render(Shell, { props: makeShellProps() });
-    await flush(2);
+    await flush(FLUSH_DIALOG_CYCLES);
     check({ getByText, queryByText });
   });
 });
@@ -349,8 +394,8 @@ describe('Shell — status warnings modal', () => {
     task_title: 'Alpha task',
     kind: {
       DeadlineViolation: {
-        deadline: '2026-06-01T00:00:00Z',
-        earliest_completion: '2026-06-03T00:00:00Z',
+        deadline: TEST_DEADLINE_TIMESTAMP,
+        earliest_completion: TEST_EARLIEST_COMPLETION_TIMESTAMP,
       },
     },
   };
@@ -364,14 +409,14 @@ describe('Shell — status warnings modal', () => {
     priority: 'Medium',
     status: 'scheduled',
     start_date: null,
-    deadline: '2026-06-01T00:00:00Z',
+    deadline: TEST_DEADLINE_TIMESTAMP,
     schedule_id: 'sched-1',
     min_chunk_minutes: 15,
     no_split: false,
     recurring_template_id: null,
     labels: [],
-    created_at: '2026-01-01T00:00:00Z',
-    updated_at: '2026-01-01T00:00:00Z',
+    created_at: TEST_TASK_EPOCH,
+    updated_at: TEST_TASK_EPOCH,
   };
 
   beforeEach(() => {
@@ -386,7 +431,7 @@ describe('Shell — status warnings modal', () => {
     await flush();
 
     await fireEvent.click(getByLabelText(/1 warning/i));
-    await flush(2);
+    await flush(FLUSH_DIALOG_CYCLES);
 
     expect(router.navigate).not.toHaveBeenCalled();
     expect(getByRole('dialog')).toBeTruthy();
@@ -401,7 +446,7 @@ describe('Shell — status warnings modal', () => {
     await flush();
 
     await fireEvent.click(getByLabelText(/1 warning/i));
-    await flush(2);
+    await flush(FLUSH_DIALOG_CYCLES);
 
     await fireEvent.click(getByRole('button', { name: 'Close dialog' }));
     await tick();
@@ -414,10 +459,10 @@ describe('Shell — status warnings modal', () => {
     await flush();
 
     await fireEvent.click(getByLabelText(/1 warning/i));
-    await flush(2);
+    await flush(FLUSH_DIALOG_CYCLES);
 
     await fireEvent.click(getByRole('button', { name: 'Alpha task' }));
-    await flush(2);
+    await flush(FLUSH_DIALOG_CYCLES);
 
     expect(vi.mocked(fakeTaskFormApi.listComments)).toHaveBeenCalledWith('task-1');
 

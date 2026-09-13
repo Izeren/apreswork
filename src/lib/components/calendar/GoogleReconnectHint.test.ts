@@ -26,15 +26,25 @@ describe('GoogleReconnectHint — visibility', () => {
   });
 });
 
-describe('GoogleReconnectHint — content', () => {
-  it('shows reconnect banner text when visible', () => {
-    const { getByText } = render(Hint, { visible: true, onreconnect: vi.fn() });
-    expect(getByText(/Google Calendar/i)).toBeDefined();
-  });
+type HintRtl = ReturnType<typeof render<typeof Hint>>;
 
-  it('renders an "Open Settings" button when visible', () => {
-    const { getByRole } = render(Hint, { visible: true, onreconnect: vi.fn() });
-    expect(getByRole('button', { name: /open settings/i })).toBeDefined();
+describe('GoogleReconnectHint — content', () => {
+  it.each<{ name: string; query: (rtl: HintRtl) => unknown }>([
+    {
+      name: 'shows reconnect banner text when visible',
+      query: (rtl) => rtl.getByText(/Google Calendar is disconnected/i),
+    },
+    {
+      name: 'mentions OAuth credentials in the banner text',
+      query: (rtl) => rtl.getByText(/OAuth credentials/i),
+    },
+    {
+      name: 'renders an "Open Settings" button when visible',
+      query: (rtl) => rtl.getByRole('button', { name: /open settings/i }),
+    },
+  ])('$name', ({ query }) => {
+    const rtl = render(Hint, { visible: true, onreconnect: vi.fn() });
+    expect(query(rtl)).toBeDefined();
   });
 });
 

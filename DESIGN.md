@@ -141,7 +141,7 @@ src-tauri/src/
     auth_commands.rs           # Tauri commands: google auth, calendar picker, manual pull, sync-now/status, user-event CRUD
     profile_commands.rs        # Tauri commands: profile status/unlock/create/rename/delete/switch
     backup_commands.rs         # Tauri commands: backup status/toggle/now, file export/import
-    credentials_commands.rs    # Tauri commands: save Google OAuth client credentials to the OS keyring + restart
+    credentials_commands.rs    # Tauri commands: validate and save Google OAuth client credentials to the OS keyring; reloads the active profile
 
   api/
     mod.rs
