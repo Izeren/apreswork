@@ -5,6 +5,8 @@ import * as api from '../../api';
 import type { AuthStatus, ExternalCalendar, SyncOutcome, SyncStatus } from '../../types';
 
 export interface SettingsViewApi {
+  googleClientCredentialsSaved: () => Promise<boolean>;
+  saveGoogleClientCredentials: (clientId: string, clientSecret: string) => Promise<void>;
   googleAuthStatus: () => Promise<AuthStatus>;
   beginGoogleAuth: () => Promise<string>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -17,7 +19,14 @@ export interface SettingsViewApi {
   syncErrorMessage: (e: unknown, fallback: string) => string;
 }
 
+export const GOOGLE_CLIENT_ID_SUFFIX = '.apps.googleusercontent.com';
+
+export const POLL_INTERVAL_MS = 2000;
+export const POLL_MAX_TICKS = 150;
+
 export const defaultSettingsViewApi: SettingsViewApi = {
+  googleClientCredentialsSaved: api.googleClientCredentialsSaved,
+  saveGoogleClientCredentials: api.saveGoogleClientCredentials,
   googleAuthStatus: api.googleAuthStatus,
   beginGoogleAuth: api.beginGoogleAuth,
   openExternalUrl: api.openExternalUrl,

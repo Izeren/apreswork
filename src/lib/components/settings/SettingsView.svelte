@@ -9,7 +9,13 @@
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import SchedulingSection from './SchedulingSection.svelte';
   import BackupSection from './BackupSection.svelte';
-  import { defaultSettingsViewApi, type SettingsViewApi } from './settingsViewShared';
+  import {
+    defaultSettingsViewApi,
+    GOOGLE_CLIENT_ID_SUFFIX,
+    POLL_INTERVAL_MS,
+    POLL_MAX_TICKS,
+    type SettingsViewApi,
+  } from './settingsViewShared';
   import type { SchedulingSectionApi } from './schedulingSectionShared';
   import type { BackupSectionApi } from './backupSectionShared';
 
@@ -24,6 +30,14 @@
     schedulingApiClient,
     backupApiClient,
   }: Props = $props();
+
+  let credentialsSaved: boolean | null = $state(null);
+  let showCredForm: boolean = $state(false);
+  let credClientId: string = $state('');
+  let credClientSecret: string = $state('');
+  let credIdError: string | null = $state(null);
+  let credSecretError: string | null = $state(null);
+  let savingCreds: boolean = $state(false);
 
   let status: AuthStatus | null = $state(null);
   let connecting: boolean = $state(false);
@@ -48,6 +62,50 @@
     });
   });
 
+  function validateCredForm(): boolean {
+    credIdError = null;
+    credSecretError = null;
+    if (!credClientId.trim()) {
+      credIdError = 'Client ID is required.';
+      return false;
+    }
+    if (!credClientId.trim().endsWith(GOOGLE_CLIENT_ID_SUFFIX)) {
+      credIdError = `Client ID must end with "${GOOGLE_CLIENT_ID_SUFFIX}".`;
+      return false;
+    }
+    if (!credClientSecret.trim()) {
+      credSecretError = 'Client Secret is required.';
+      return false;
+    }
+    return true;
+  }
+
+  function handleSaveCreds(e: SubmitEvent): void {
+    e.preventDefault();
+    if (!validateCredForm()) return;
+    savingCreds = true;
+    apiClient
+      .saveGoogleClientCredentials(credClientId, credClientSecret)
+      .then(() => {
+        savingCreds = false;
+        showCredForm = false;
+        credentialsSaved = true;
+        credClientId = '';
+        credClientSecret = '';
+        credIdError = null;
+        credSecretError = null;
+        syncStatus = null;
+        calendarsError = null;
+        if (status?.type === 'connected') loadPicker();
+        toastState.success('OAuth credentials saved.');
+      })
+      .catch((err: unknown) => {
+        onSyncError(err, 'Could not save credentials.', () => {
+          savingCreds = false;
+        });
+      });
+  }
+
   function stopPolling(): void {
     if (pollTimer !== null) {
       clearInterval(pollTimer);
@@ -61,8 +119,7 @@
     pollTicks = 0;
     pollTimer = setInterval(() => {
       pollTicks += 1;
-      if (pollTicks > 150) {
-        // ~5 minutes: stop silently
+      if (pollTicks > POLL_MAX_TICKS) {
         stopPolling();
         return;
       }
@@ -80,7 +137,7 @@
         .catch(() => {
           // Read-only status check — errors are intentionally silent.
         });
-    }, 2000);
+    }, POLL_INTERVAL_MS);
   }
 
   function loadPicker(): void {
@@ -103,7 +160,7 @@
         syncStatus = s;
       })
       .catch(() => {
-        // Display-only bookkeeping — errors are intentionally silent.
+        // see startPolling
       });
   }
 
@@ -191,6 +248,19 @@
 
   $effect(() => {
     apiClient
+      .googleClientCredentialsSaved()
+      .then((saved) => {
+        credentialsSaved = saved;
+        showCredForm = !saved;
+      })
+      .catch(() => {
+        credentialsSaved = false;
+        showCredForm = true;
+      });
+  });
+
+  $effect(() => {
+    apiClient
       .googleAuthStatus()
       .then((s) => {
         status = s;
@@ -217,6 +287,56 @@
 
   <div class="settings-card">
     <h3 class="card-title">Google Calendar</h3>
+
+    {#if credentialsSaved === true && !showCredForm}
+      <p class="cred-status">
+        OAuth app credentials configured.
+        <button class="btn-link" onclick={() => (showCredForm = true)}>Change</button>
+      </p>
+    {/if}
+
+    {#if showCredForm}
+      <form class="cred-form" onsubmit={handleSaveCreds}>
+        <div class="cred-field">
+          <label class="cred-label" for="cred-client-id">Client ID</label>
+          <input
+            id="cred-client-id"
+            class="cred-input"
+            type="text"
+            autocomplete="off"
+            bind:value={credClientId}
+            disabled={savingCreds}
+            oninput={() => (credIdError = null)}
+          />
+          {#if credIdError}
+            <span class="field-error" role="alert">{credIdError}</span>
+          {/if}
+        </div>
+        <div class="cred-field">
+          <label class="cred-label" for="cred-client-secret">Client Secret</label>
+          <input
+            id="cred-client-secret"
+            class="cred-input"
+            type="password"
+            autocomplete="off"
+            bind:value={credClientSecret}
+            disabled={savingCreds}
+            oninput={() => (credSecretError = null)}
+          />
+          {#if credSecretError}
+            <span class="field-error" role="alert">{credSecretError}</span>
+          {/if}
+        </div>
+        <button class="btn-primary btn-sm" type="submit" disabled={savingCreds}>
+          {savingCreds ? 'Saving…' : 'Save'}
+        </button>
+        {#if credentialsSaved === true}
+          <button type="button" class="btn-sm" onclick={() => (showCredForm = false)}>
+            Cancel
+          </button>
+        {/if}
+      </form>
+    {/if}
 
     <p class="status-line">
       {#if status === null}
@@ -250,15 +370,24 @@
     </div>
 
     {#if status?.type === 'connected'}
-      <!-- Reconnect-needed banner: a recorded sync failure usually means the
-           Google sign-in expired (Testing-status refresh tokens die weekly). -->
-      {#if syncStatus?.last_sync_error}
+      <!-- Testing-status refresh tokens die weekly -->
+      {#if syncStatus?.last_sync_error && !(showCredForm && credentialsSaved === true)}
         <div class="reconnect-banner" role="alert">
           <p class="error-text">{syncStatus.last_sync_error}</p>
-          <p class="muted">The last sync failed — your Google sign-in may have expired.</p>
-          <button class="btn-primary btn-sm" onclick={handleConnect} disabled={connecting}>
-            {connecting ? 'Connecting…' : 'Reconnect now'}
-          </button>
+          <p class="muted">
+            The last sync failed. Your Google sign-in may have expired, or your OAuth app
+            credentials may be invalid.
+          </p>
+          <div class="button-row">
+            <button class="btn-primary btn-sm" onclick={handleConnect} disabled={connecting}>
+              {connecting ? 'Connecting…' : 'Reconnect now'}
+            </button>
+            {#if credentialsSaved === true}
+              <button type="button" class="btn-sm" onclick={() => (showCredForm = true)}>
+                Change credentials
+              </button>
+            {/if}
+          </div>
         </div>
       {/if}
 
@@ -322,6 +451,8 @@
 
 <style>
   .settings-view {
+    --color-primary-fallback: #6366f1;
+    --color-danger-fallback: #dc2626;
     padding: var(--spacing-6);
     overflow-y: auto;
     height: 100%;
@@ -333,6 +464,54 @@
     font-weight: var(--font-weight-semibold);
     color: var(--color-text);
     margin: 0 0 var(--spacing-6) 0;
+  }
+
+  .cred-status {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--spacing-3) 0;
+  }
+
+  .cred-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-3);
+    margin-bottom: var(--spacing-4);
+  }
+
+  .cred-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-1);
+  }
+
+  .cred-label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text);
+  }
+
+  .cred-input {
+    padding: var(--spacing-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--font-size-sm);
+  }
+
+  .field-error {
+    font-size: var(--font-size-sm);
+    color: var(--color-danger, var(--color-danger-fallback));
+  }
+
+  .btn-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--color-primary, var(--color-primary-fallback));
+    cursor: pointer;
+    font-size: inherit;
+    text-decoration: underline;
   }
 
   .button-row {
@@ -381,7 +560,7 @@
     align-items: flex-start;
     gap: var(--spacing-2);
     padding: var(--spacing-3);
-    border: 1px solid var(--color-danger, #dc2626);
+    border: 1px solid var(--color-danger, var(--color-danger-fallback));
     border-radius: var(--radius-md);
   }
 </style>

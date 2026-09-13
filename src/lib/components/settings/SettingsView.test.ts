@@ -21,9 +21,25 @@ import type {
   UpdateConfigInput,
 } from '../../types';
 import SettingsView from './SettingsView.svelte';
-import { type SettingsViewApi } from './settingsViewShared';
+import {
+  GOOGLE_CLIENT_ID_SUFFIX,
+  POLL_INTERVAL_MS,
+  POLL_MAX_TICKS,
+  type SettingsViewApi,
+} from './settingsViewShared';
 import type { SchedulingSectionApi } from './schedulingSectionShared';
 import type { BackupSectionApi } from './backupSectionShared';
+
+const INITIAL_POLL_CHECK_INTERVALS = 2;
+const STOP_VERIFICATION_INTERVALS = 5;
+const EXTENDED_TIMEOUT_INTERVALS = 10;
+const INITIAL_CALL_COUNT = 1;
+const INITIAL_CALL_PLUS_ONE = 2;
+const FLUSHES_SINGLE_LAYER = 1;
+const DEFAULT_PLANNING_HORIZON_DAYS = 30;
+const DEFAULT_MAX_CONTINUOUS_MINUTES = 120;
+const DEFAULT_MIN_BREAK_MINUTES = 5;
+const FLUSHES_CONNECTED = 2;
 
 const PRIMARY_CAL: ExternalCalendar = { id: 'cal-primary', title: 'My Calendar', primary: true };
 const SECONDARY_CAL: ExternalCalendar = { id: 'cal-secondary', title: 'Work', primary: false };
@@ -39,10 +55,10 @@ const QUIET_BACKUP_STATUS: BackupStatus = {
 };
 
 const QUIET_CONFIG: AppConfig = {
-  planning_horizon_days: 30,
+  planning_horizon_days: DEFAULT_PLANNING_HORIZON_DAYS,
   timezone: 'UTC',
-  max_continuous_minutes: 120,
-  min_break_minutes: 5,
+  max_continuous_minutes: DEFAULT_MAX_CONTINUOUS_MINUTES,
+  min_break_minutes: DEFAULT_MIN_BREAK_MINUTES,
   last_reschedule: null,
   last_mutation: null,
   last_sync: null,
@@ -50,6 +66,8 @@ const QUIET_CONFIG: AppConfig = {
 };
 
 let fakeApi: {
+  googleClientCredentialsSaved: MockInstance<() => Promise<boolean>>;
+  saveGoogleClientCredentials: MockInstance<(id: string, secret: string) => Promise<void>>;
   googleAuthStatus: MockInstance<() => Promise<AuthStatus>>;
   beginGoogleAuth: MockInstance<() => Promise<string>>;
   openExternalUrl: MockInstance<(url: string) => Promise<void>>;
@@ -67,6 +85,10 @@ let fakeBackupApi: BackupSectionApi;
 
 beforeEach(() => {
   fakeApi = {
+    googleClientCredentialsSaved: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
+    saveGoogleClientCredentials: vi
+      .fn<(id: string, secret: string) => Promise<void>>()
+      .mockResolvedValue(undefined),
     googleAuthStatus: vi.fn<() => Promise<AuthStatus>>(),
     beginGoogleAuth: vi.fn<() => Promise<string>>(),
     openExternalUrl: vi.fn<(url: string) => Promise<void>>(),
@@ -124,20 +146,13 @@ function makeChunk(id: string): Chunk {
   };
 }
 
-/**
- * Flush one level of microtask queue + Svelte reactivity.
- * Call twice when effects chain two async layers (e.g. loadPicker inside
- * the .then of googleAuthStatus).
- */
+/** Call twice when effects chain two async layers (for example, loadPicker inside the then of googleAuthStatus). */
 async function flush() {
   await Promise.resolve();
   await tick();
 }
 
-/**
- * Set fakeApi to the connected-account happy path: status + calendars + saved selection +
- * sync status. Callers override individual fakeApi methods after this to exercise failure branches.
- */
+/** Callers override individual fakeApi methods after this to exercise failure branches. */
 function mockConnected(
   opts: {
     email?: string | null;
@@ -154,11 +169,10 @@ function mockConnected(
 }
 
 /**
- * Render SettingsView with injected fakes, then flush the mount effects.
  * Pass `flushes: 1` for the not_connected / pending / connect paths (single async layer);
  * the default 2 resolves googleAuthStatus.then and the loadPicker it chains.
  */
-async function mountAndFlush(flushes = 2) {
+async function mountAndFlush(flushes = FLUSHES_CONNECTED) {
   const utils = render(SettingsView, {
     props: {
       apiClient: fakeApi,
@@ -183,13 +197,24 @@ async function clickConnect() {
   return btn;
 }
 
+async function fillAndSubmitCredForm(utils: Awaited<ReturnType<typeof mountAndFlush>>) {
+  const { getByLabelText, getByText } = utils;
+  await fireEvent.input(getByLabelText('Client ID'), {
+    target: { value: 'my-id.apps.googleusercontent.com' },
+  });
+  await fireEvent.input(getByLabelText('Client Secret'), { target: { value: 'GOCSPX-secret' } });
+  const form = getByText('Save').closest('form')!;
+  await fireEvent.submit(form);
+  await flush();
+}
+
 describe('SettingsView — not_connected on mount', () => {
   beforeEach(() => {
     fakeApi.googleAuthStatus.mockResolvedValue({ type: 'not_connected' });
   });
 
   it('shows "Not connected" and Connect button; picker and Sync absent; googleListCalendars not called', async () => {
-    const { getByText, queryByText } = await mountAndFlush(1);
+    const { getByText, queryByText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
 
     expect(getByText('Not connected')).toBeTruthy();
     expect(getByText('Connect Google Calendar')).toBeTruthy();
@@ -218,7 +243,7 @@ describe('SettingsView — connected status line', () => {
 
 describe('SettingsView — connected mounts picker', () => {
   it('calls googleListCalendars + getPullCalendars; renders checkboxes, saved selection, and (primary) marker', async () => {
-    mockConnected({ calendars: [PRIMARY_CAL, SECONDARY_CAL], pull: ['cal-primary'] });
+    mockConnected({ calendars: [PRIMARY_CAL, SECONDARY_CAL], pull: [PRIMARY_CAL.id] });
 
     const { getByText } = await mountAndFlush();
 
@@ -247,21 +272,21 @@ describe('SettingsView — Connect click happy path', () => {
     fakeApi.getPullCalendars.mockResolvedValue([]);
     fakeApi.getSyncStatus.mockResolvedValue(NEVER_SYNCED);
 
-    await mountAndFlush(1);
+    await mountAndFlush(FLUSHES_SINGLE_LAYER);
 
     await clickConnect();
 
     expect(fakeApi.beginGoogleAuth).toHaveBeenCalledOnce();
     expect(fakeApi.openExternalUrl).toHaveBeenCalledWith(consentUrl);
 
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
     await flush();
 
-    expect(fakeApi.googleAuthStatus).toHaveBeenCalledTimes(2);
+    expect(fakeApi.googleAuthStatus).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
     expect(toastState.items.some((t) => t.text.includes('connected'))).toBe(true);
 
     const countAfterConnect = fakeApi.googleAuthStatus.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(10000);
+    await vi.advanceTimersByTimeAsync(STOP_VERIFICATION_INTERVALS * POLL_INTERVAL_MS);
     await flush();
     expect(fakeApi.googleAuthStatus.mock.calls).toHaveLength(countAfterConnect);
   });
@@ -272,14 +297,16 @@ describe('SettingsView — pending on mount', () => {
     vi.useFakeTimers();
     fakeApi.googleAuthStatus.mockResolvedValue({ type: 'pending' });
 
-    const { getByText } = await mountAndFlush(1);
+    const { getByText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
 
     expect(getByText(/Waiting for you to finish signing in/)).toBeTruthy();
 
-    await vi.advanceTimersByTimeAsync(4000);
+    await vi.advanceTimersByTimeAsync(INITIAL_POLL_CHECK_INTERVALS * POLL_INTERVAL_MS);
     await flush();
 
-    expect(fakeApi.googleAuthStatus).toHaveBeenCalledTimes(3);
+    expect(fakeApi.googleAuthStatus).toHaveBeenCalledTimes(
+      INITIAL_CALL_COUNT + INITIAL_POLL_CHECK_INTERVALS,
+    );
     expect(fakeApi.beginGoogleAuth).not.toHaveBeenCalled();
     expect(fakeApi.openExternalUrl).not.toHaveBeenCalled();
   });
@@ -288,15 +315,15 @@ describe('SettingsView — pending on mount', () => {
     vi.useFakeTimers();
     fakeApi.googleAuthStatus.mockResolvedValue({ type: 'pending' });
 
-    const { getByText } = await mountAndFlush(1);
+    const { getByText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
 
-    await vi.advanceTimersByTimeAsync(302_000);
+    await vi.advanceTimersByTimeAsync((POLL_MAX_TICKS + INITIAL_CALL_COUNT) * POLL_INTERVAL_MS);
     await flush();
 
     const countAtTimeout = fakeApi.googleAuthStatus.mock.calls.length;
-    expect(countAtTimeout).toBe(151);
+    expect(countAtTimeout).toBe(POLL_MAX_TICKS + INITIAL_CALL_COUNT);
 
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(EXTENDED_TIMEOUT_INTERVALS * POLL_INTERVAL_MS);
     await flush();
 
     expect(fakeApi.googleAuthStatus.mock.calls).toHaveLength(countAtTimeout);
@@ -312,7 +339,7 @@ describe('SettingsView — Connect click failure', () => {
       message: 'Calendar sync error: network error',
     });
 
-    await mountAndFlush(1);
+    await mountAndFlush(FLUSHES_SINGLE_LAYER);
     const connectBtn = await clickConnect();
 
     expect(fakeApi.openExternalUrl).not.toHaveBeenCalled();
@@ -327,7 +354,7 @@ describe('SettingsView — Connect click failure', () => {
     fakeApi.beginGoogleAuth.mockResolvedValue('https://example.invalid/consent');
     fakeApi.openExternalUrl.mockRejectedValue(new Error('no browser'));
 
-    const { getByText } = await mountAndFlush(1);
+    const { getByText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
     await clickConnect();
 
     expect(toastState.items.some((t) => t.text.includes('Could not open the browser'))).toBe(true);
@@ -337,103 +364,131 @@ describe('SettingsView — Connect click failure', () => {
 
 describe('SettingsView — Disconnect flow', () => {
   beforeEach(() => {
-    mockConnected({ email: 'x@example.com', calendars: [PRIMARY_CAL], pull: ['cal-primary'] });
+    mockConnected({ email: 'x@example.com', calendars: [PRIMARY_CAL], pull: [PRIMARY_CAL.id] });
   });
 
-  it('confirm: googleDisconnect called, status refetched, success toast', async () => {
-    fakeApi.googleDisconnect.mockResolvedValue(undefined);
-    fakeApi.googleAuthStatus
-      .mockResolvedValueOnce({ type: 'connected', email: 'x@example.com' })
-      .mockResolvedValue({ type: 'not_connected' });
+  it.each([
+    {
+      label: 'confirm',
+      setupMocks: () => {
+        fakeApi.googleDisconnect.mockResolvedValue(undefined);
+        fakeApi.googleAuthStatus
+          .mockResolvedValueOnce({ type: 'connected', email: 'x@example.com' })
+          .mockResolvedValue({ type: 'not_connected' });
+      },
+      checkDialogBefore: true,
+      checkDialogAfter: true,
+      confirmButtonText: 'Disconnect',
+      checkOutcome: (
+        _getByText: (t: string) => HTMLElement,
+        _queryByRole: (r: string) => HTMLElement | null,
+      ) => {
+        expect(fakeApi.googleDisconnect).toHaveBeenCalledOnce();
+        expect(toastState.items.some((t) => t.text.includes('disconnected'))).toBe(true);
+      },
+    },
+    {
+      label: 'failure',
+      setupMocks: () => {
+        fakeApi.googleDisconnect.mockRejectedValue({
+          error: 'calendar_sync',
+          message: 'Calendar sync error: HTTP 500',
+        });
+      },
+      checkDialogBefore: false,
+      checkDialogAfter: false,
+      confirmButtonText: 'Disconnect',
+      checkOutcome: (
+        getByText: (t: string) => HTMLElement,
+        queryByRole: (r: string) => HTMLElement | null,
+      ) => {
+        expect(toastState.items.some((t) => t.text.includes('Calendar sync error: HTTP 500'))).toBe(
+          true,
+        );
+        expect(queryByRole('alertdialog')).toBeNull();
+        expect((getByText('Disconnect…') as HTMLButtonElement).disabled).toBe(false);
+      },
+    },
+    {
+      label: 'cancel',
+      setupMocks: () => {},
+      checkDialogBefore: true,
+      checkDialogAfter: true,
+      confirmButtonText: 'Cancel',
+      checkOutcome: (
+        _getByText: (t: string) => HTMLElement,
+        _queryByRole: (r: string) => HTMLElement | null,
+      ) => {
+        expect(fakeApi.googleDisconnect).not.toHaveBeenCalled();
+      },
+    },
+  ])(
+    'Disconnect: $label',
+    async ({
+      setupMocks,
+      checkDialogBefore,
+      checkDialogAfter,
+      confirmButtonText,
+      checkOutcome,
+    }) => {
+      setupMocks();
+      const { getByText, queryByRole } = await mountAndFlush();
 
-    const { getByText, queryByRole } = await mountAndFlush();
+      if (checkDialogBefore) expect(queryByRole('alertdialog')).toBeNull();
 
-    expect(queryByRole('alertdialog')).toBeNull();
+      await fireEvent.click(getByText('Disconnect…'));
+      await flush();
 
-    await fireEvent.click(getByText('Disconnect…'));
-    await flush();
+      if (checkDialogAfter) expect(queryByRole('alertdialog')).toBeTruthy();
 
-    expect(queryByRole('alertdialog')).toBeTruthy();
+      await fireEvent.click(getByText(confirmButtonText));
+      await flush();
 
-    await fireEvent.click(getByText('Disconnect'));
-    await flush();
-
-    expect(fakeApi.googleDisconnect).toHaveBeenCalledOnce();
-    expect(toastState.items.some((t) => t.text.includes('disconnected'))).toBe(true);
-  });
-
-  it('cancel: googleDisconnect NOT called', async () => {
-    const { getByText, queryByRole } = await mountAndFlush();
-
-    await fireEvent.click(getByText('Disconnect…'));
-    await flush();
-
-    expect(queryByRole('alertdialog')).toBeTruthy();
-
-    await fireEvent.click(getByText('Cancel'));
-    await flush();
-
-    expect(fakeApi.googleDisconnect).not.toHaveBeenCalled();
-  });
-
-  it('failure: error toast shown, dialog closed, button re-enabled', async () => {
-    fakeApi.googleDisconnect.mockRejectedValue({
-      error: 'calendar_sync',
-      message: 'Calendar sync error: HTTP 500',
-    });
-
-    const { getByText, queryByRole } = await mountAndFlush();
-
-    await fireEvent.click(getByText('Disconnect…'));
-    await flush();
-    await fireEvent.click(getByText('Disconnect'));
-    await flush();
-
-    expect(toastState.items.some((t) => t.text.includes('Calendar sync error: HTTP 500'))).toBe(
-      true,
-    );
-    expect(queryByRole('alertdialog')).toBeNull();
-    expect((getByText('Disconnect…') as HTMLButtonElement).disabled).toBe(false);
-  });
+      checkOutcome(getByText, queryByRole);
+    },
+  );
 });
 
 describe('SettingsView — checkbox toggle', () => {
   beforeEach(() => {
-    mockConnected({ calendars: [PRIMARY_CAL, SECONDARY_CAL], pull: ['cal-primary'] });
+    mockConnected({ calendars: [PRIMARY_CAL, SECONDARY_CAL], pull: [PRIMARY_CAL.id] });
   });
 
-  it('happy path: setPullCalendars called with updated id array', async () => {
-    fakeApi.setPullCalendars.mockResolvedValue(undefined);
-
+  it.each([
+    {
+      label: 'happy path',
+      setupMocks: () => fakeApi.setPullCalendars.mockResolvedValue(undefined),
+      flushCount: 1,
+      checkOutcome: () => {
+        expect(fakeApi.setPullCalendars).toHaveBeenCalledWith(
+          expect.arrayContaining([PRIMARY_CAL.id, SECONDARY_CAL.id]),
+        );
+      },
+    },
+    {
+      label: 'failure',
+      setupMocks: () => {
+        fakeApi.setPullCalendars.mockRejectedValue({
+          error: 'calendar_sync',
+          message: 'Calendar sync error: save failed',
+        });
+        fakeApi.getPullCalendars
+          .mockResolvedValueOnce(['cal-primary'])
+          .mockResolvedValue(['cal-primary']);
+      },
+      flushCount: 2,
+      checkOutcome: () => {
+        expect(toastState.items.some((t) => t.text.includes('Calendar sync error'))).toBe(true);
+        expect(fakeApi.getPullCalendars).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
+      },
+    },
+  ])('checkbox toggle: $label', async ({ setupMocks, flushCount, checkOutcome }) => {
+    setupMocks();
     await mountAndFlush();
-
     const secondaryBox = calendarCheckbox('Work')!;
     await fireEvent.click(secondaryBox);
-    await flush();
-
-    expect(fakeApi.setPullCalendars).toHaveBeenCalledWith(
-      expect.arrayContaining(['cal-primary', 'cal-secondary']),
-    );
-  });
-
-  it('failure: error toast shown and getPullCalendars re-called to revert selection', async () => {
-    fakeApi.setPullCalendars.mockRejectedValue({
-      error: 'calendar_sync',
-      message: 'Calendar sync error: save failed',
-    });
-    fakeApi.getPullCalendars
-      .mockResolvedValueOnce(['cal-primary'])
-      .mockResolvedValue(['cal-primary']);
-
-    await mountAndFlush();
-
-    const secondaryBox = calendarCheckbox('Work')!;
-    await fireEvent.click(secondaryBox);
-    await flush();
-    await flush();
-
-    expect(toastState.items.some((t) => t.text.includes('Calendar sync error'))).toBe(true);
-    expect(fakeApi.getPullCalendars).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < flushCount; i++) await flush();
+    checkOutcome();
   });
 });
 
@@ -442,15 +497,32 @@ describe('SettingsView — Sync now', () => {
     mockConnected();
   });
 
-  it.each([
-    [1, '1 chunk scheduled, 0 Google events updated'],
-    [2, '2 chunks scheduled, 3 Google events updated'],
-  ])(
-    'syncNow with %i placed chunks: warningState updated; toast says "%s"; sync status refreshed',
-    async (count, expectedText) => {
+  it.each<
+    [number | null, string, { created: number; updated: number; deleted: number } | null, boolean]
+  >([
+    [
+      1,
+      '1 chunk scheduled, 0 Google events updated',
+      { created: 0, updated: 0, deleted: 0 },
+      false,
+    ],
+    [
+      2,
+      '2 chunks scheduled, 3 Google events updated',
+      { created: 1, updated: 1, deleted: 1 },
+      false,
+    ],
+    [null, 'Calendar sync error: HTTP 503', null, true],
+  ])('syncNow count=%s: %s', async (count, expectedText, pushed, shouldFail) => {
+    if (shouldFail) {
+      fakeApi.syncNow.mockRejectedValue({
+        error: 'calendar_sync',
+        message: 'Calendar sync error: HTTP 503',
+      });
+    } else {
       fakeApi.syncNow.mockResolvedValue({
         schedule: {
-          placed_chunks: Array.from({ length: count }, (_, i) => makeChunk(`c${i}`)),
+          placed_chunks: Array.from({ length: count! }, (_, i) => makeChunk(`c${i}`)),
           warnings: [
             {
               task_id: 'task-warn',
@@ -459,45 +531,29 @@ describe('SettingsView — Sync now', () => {
             },
           ],
         },
-        pushed:
-          count === 1
-            ? { created: 0, updated: 0, deleted: 0 }
-            : { created: 1, updated: 1, deleted: 1 },
+        pushed: pushed!,
       });
+    }
 
-      const { getByText } = await mountAndFlush();
+    const { getByText } = await mountAndFlush();
 
-      await fireEvent.click(getByText('Sync now'));
-      await flush();
-      await flush();
+    await fireEvent.click(getByText('Sync now'));
+    await flush();
+    await flush();
 
+    if (shouldFail) {
+      expect(toastState.items.some((t) => t.text.includes('Calendar sync error: HTTP 503'))).toBe(
+        true,
+      );
+      expect((getByText('Sync now') as HTMLButtonElement).disabled).toBe(false);
+      expect(warningState.items).toHaveLength(0);
+    } else {
       expect(fakeApi.syncNow).toHaveBeenCalledOnce();
       expect(warningState.items).toHaveLength(1);
       expect(warningState.items[0].task_id).toBe('task-warn');
       expect(toastState.items.some((t) => t.text.includes(expectedText))).toBe(true);
-      expect(fakeApi.getSyncStatus).toHaveBeenCalledTimes(2);
-    },
-  );
-
-  it('failure: error toast with sanitized message; button re-enabled; sync status still refreshed', async () => {
-    fakeApi.syncNow.mockRejectedValue({
-      error: 'calendar_sync',
-      message: 'Calendar sync error: HTTP 503',
-    });
-
-    const { getByText } = await mountAndFlush();
-
-    const syncBtn = getByText('Sync now');
-    await fireEvent.click(syncBtn);
-    await flush();
-    await flush();
-
-    expect(toastState.items.some((t) => t.text.includes('Calendar sync error: HTTP 503'))).toBe(
-      true,
-    );
-    expect((getByText('Sync now') as HTMLButtonElement).disabled).toBe(false);
-    expect(warningState.items).toHaveLength(0);
-    expect(fakeApi.getSyncStatus).toHaveBeenCalledTimes(2);
+    }
+    expect(fakeApi.getSyncStatus).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
   });
 });
 
@@ -618,6 +674,218 @@ describe('SettingsView — calendar load failure', () => {
     await fireEvent.click(retryBtn);
     await flush();
 
-    expect(fakeApi.googleListCalendars).toHaveBeenCalledTimes(2);
+    expect(fakeApi.googleListCalendars).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
+  });
+});
+
+describe('SettingsView — OAuth client credentials', () => {
+  beforeEach(() => {
+    fakeApi.googleAuthStatus.mockResolvedValue({ type: 'not_connected' });
+  });
+
+  it.each([
+    {
+      credentialsSaved: false,
+      checkUI: (utils: Awaited<ReturnType<typeof mountAndFlush>>) => {
+        expect(utils.getByLabelText('Client ID')).toBeTruthy();
+        expect(utils.getByLabelText('Client Secret')).toBeTruthy();
+        expect(utils.getByText('Save')).toBeTruthy();
+      },
+    },
+    {
+      credentialsSaved: true,
+      checkUI: (utils: Awaited<ReturnType<typeof mountAndFlush>>) => {
+        expect(utils.getByText('OAuth app credentials configured.')).toBeTruthy();
+        expect(utils.getByText('Change')).toBeTruthy();
+        expect(utils.queryByLabelText('Client ID')).toBeNull();
+      },
+    },
+  ])(
+    'credential form visibility: saved=$credentialsSaved',
+    async ({ credentialsSaved, checkUI }) => {
+      fakeApi.googleClientCredentialsSaved.mockResolvedValue(credentialsSaved);
+      const utils = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+      checkUI(utils);
+    },
+  );
+
+  it('shows the form after clicking Change', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+
+    const { getByText, getByLabelText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+
+    await fireEvent.click(getByText('Change'));
+    await tick();
+
+    expect(getByLabelText('Client ID')).toBeTruthy();
+    expect(getByText('Cancel')).toBeTruthy();
+  });
+
+  it.each<{
+    label: string;
+    setupMocks: () => void;
+    checkOutcome: (utils: Awaited<ReturnType<typeof mountAndFlush>>) => void;
+  }>([
+    {
+      label: 'success',
+      setupMocks: () => {},
+      checkOutcome: (utils) => {
+        expect(fakeApi.saveGoogleClientCredentials).toHaveBeenCalledWith(
+          'my-id.apps.googleusercontent.com',
+          'GOCSPX-secret',
+        );
+        expect(utils.queryByLabelText('Client ID')).toBeNull();
+        expect(utils.getByText('OAuth app credentials configured.')).toBeTruthy();
+        expect(toastState.items.some((t) => t.text.includes('OAuth credentials saved.'))).toBe(
+          true,
+        );
+      },
+    },
+    {
+      label: 'failure',
+      setupMocks: () => {
+        fakeApi.saveGoogleClientCredentials.mockRejectedValue({
+          error: 'validation',
+          message: 'client_id must not be empty',
+        });
+      },
+      checkOutcome: (utils) => {
+        expect(toastState.items.some((t) => t.text.includes('client_id must not be empty'))).toBe(
+          true,
+        );
+        expect((utils.getByText('Save') as HTMLButtonElement).disabled).toBe(false);
+      },
+    },
+  ])('credential save: $label', async ({ setupMocks, checkOutcome }) => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(false);
+    setupMocks();
+    const utils = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+    await fillAndSubmitCredForm(utils);
+    checkOutcome(utils);
+  });
+
+  it.each([
+    {
+      label: 'empty client_id',
+      clientId: '',
+      clientSecret: 'GOCSPX-secret',
+      expectedError: 'Client ID is required.',
+    },
+    {
+      label: 'invalid client_id format',
+      clientId: 'not-a-google-client-id',
+      clientSecret: 'GOCSPX-secret',
+      expectedError: GOOGLE_CLIENT_ID_SUFFIX,
+    },
+    {
+      label: 'empty client_secret',
+      clientId: 'my-id.apps.googleusercontent.com',
+      clientSecret: '',
+      expectedError: 'Client Secret is required.',
+    },
+  ])('form validation blocks submit: $label', async ({ clientId, clientSecret, expectedError }) => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(false);
+
+    const { getByLabelText, getByText, getByRole } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+
+    await fireEvent.input(getByLabelText('Client ID'), { target: { value: clientId } });
+    await fireEvent.input(getByLabelText('Client Secret'), { target: { value: clientSecret } });
+    const form = getByText('Save').closest('form')!;
+    await fireEvent.submit(form);
+    await tick();
+
+    expect(getByRole('alert')).toBeTruthy();
+    expect(
+      getByText(new RegExp(expectedError.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))),
+    ).toBeTruthy();
+    expect(fakeApi.saveGoogleClientCredentials).not.toHaveBeenCalled();
+  });
+
+  it('typing in Client ID field clears its error', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(false);
+
+    const { getByLabelText, getByText, queryByRole } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+
+    const form = getByText('Save').closest('form')!;
+    await fireEvent.submit(form);
+    await tick();
+    expect(queryByRole('alert')).toBeTruthy();
+
+    await fireEvent.input(getByLabelText('Client ID'), { target: { value: 'x' } });
+    await tick();
+    expect(queryByRole('alert')).toBeNull();
+  });
+
+  it('reconnect banner shows "Change credentials" button when credentials are saved', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+    mockConnected({
+      syncStatus: { last_sync_at: null, last_sync_error: 'Calendar sync error: HTTP 401' },
+    });
+
+    const { getByText } = await mountAndFlush();
+
+    expect(getByText('Change credentials')).toBeTruthy();
+    expect(getByText(/OAuth app credentials may be invalid/)).toBeTruthy();
+  });
+
+  it('clicking Change credentials opens the credential form', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+    mockConnected({
+      syncStatus: { last_sync_at: null, last_sync_error: 'Calendar sync error: HTTP 401' },
+    });
+
+    const { getByText, getByLabelText } = await mountAndFlush();
+
+    await fireEvent.click(getByText('Change credentials'));
+    await tick();
+
+    expect(getByLabelText('Client ID')).toBeTruthy();
+    expect(getByText('Cancel')).toBeTruthy();
+  });
+
+  it('reconnect banner hides while the credential form is open', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+    mockConnected({
+      syncStatus: { last_sync_at: null, last_sync_error: 'Calendar sync error: HTTP 401' },
+    });
+
+    const { queryByRole, getByText, getByLabelText } = await mountAndFlush();
+
+    expect(queryByRole('alert')).toBeTruthy();
+
+    await fireEvent.click(getByText('Change credentials'));
+    await tick();
+
+    expect(queryByRole('alert')).toBeNull();
+    expect(getByLabelText('Client ID')).toBeTruthy();
+  });
+
+  it('a successful save clears the stale sync error and reloads calendars', async () => {
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+    fakeApi.googleListCalendars
+      .mockRejectedValueOnce({
+        error: 'calendar_sync',
+        message: 'Calendar sync error: token refresh failed with HTTP 401',
+      })
+      .mockResolvedValue([]);
+    fakeApi.getPullCalendars.mockResolvedValue([]);
+    mockConnected({
+      syncStatus: { last_sync_at: null, last_sync_error: 'Calendar sync error: HTTP 401' },
+    });
+
+    const utils = await mountAndFlush();
+    const { queryByRole, queryByText, getByText } = utils;
+
+    expect(queryByText('Calendar sync error: token refresh failed with HTTP 401')).toBeTruthy();
+
+    await fireEvent.click(getByText('Change credentials'));
+    await tick();
+
+    await fillAndSubmitCredForm(utils);
+    await flush();
+
+    expect(queryByRole('alert')).toBeNull();
+    expect(queryByText('Calendar sync error: token refresh failed with HTTP 401')).toBeNull();
+    expect(fakeApi.googleListCalendars).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
   });
 });

@@ -153,8 +153,20 @@
     "findings": {}
   },
   "src-tauri/src/calendar/google_client_creds.rs": {
-    "blob": "134eb4d9ce8d64e07b820fc648de0b90b413a7a0",
-    "findings": {}
+    "blob": "81494c7314fd813e48374ace9b6655a3abf56cc1",
+    "findings": {
+      "7fff3122-c6a2-4ec4-9fb2-e05b8f28380d": {
+        "agent": "doc-slop-reviewer",
+        "at": "2026-09-13T12:27:57.793469+00:00",
+        "blob": "81494c7314fd813e48374ace9b6655a3abf56cc1",
+        "session_reason": "S3 ('Google answers with invalid_grant or redirect_uri_mismatch, never invalid_client, so the dummy redirect URI does not affect the outcome.') does not restate S1. S1 explains what Google returns for wrong vs. valid credentials. S3 explains WHY a non-real redirect URI is safe for the probe \u2014 that Google will not return invalid_client for a bad redirect URI. This is a non-obvious invariant about the probe design: without it a reader could assume a real redirect URI is required. S1 makes no claim about the redirect URI parameter.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"A comment that is longer than its fact. Apply this rule to each comment of two or more sentences. Keep a sentence only if it says what the code cannot say.\"\n\nOriginal: Lines 25-38 contain three substantive sentences. S1 states Google returns invalid_client for wrong credentials and other responses (for example invalid_grant, redirect_uri_mismatch) for valid ones. S3 repeats this: Google answers with invalid_grant or redirect_uri_mismatch, never invalid_client. S3 restates information already in S1 without adding what the code cannot express. S1 Keep, S2 Keep (best-effort design choice), S3 Delete (restates S1).",
+        "symbol": "probe_google_credentials",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "S3 draws a conclusion about a specific design element (the dummy redirect URI on line 45) that S1 does not mention. S1 states the general Google behavior for wrong vs. valid credentials. S3 applies that rule to explain why the fake redirect URI is safe \u2014 a non-obvious design invariant the code cannot express. The finder mistook this distinct invariant for a restatement of the general rule."
+      }
+    }
   },
   "src-tauri/src/calendar/google_http.rs": {
     "blob": "bb0c638e4a688187c3784258a4144bd037d12db6",
@@ -329,8 +341,20 @@
     "findings": {}
   },
   "src-tauri/src/commands/credentials_commands.rs": {
-    "blob": "308040ac035477be08c680abaef455ab8f69bf29",
-    "findings": {}
+    "blob": "d247e9800d40f5989052e3f552f505d59368cf00",
+    "findings": {
+      "63d28a5c-1130-4043-88a2-54790cb0f8c6": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T12:23:47.568794+00:00",
+        "blob": "7c503f2254b001c622b5f54c1b9bc6209cfbc74f",
+        "session_reason": "ActiveState::get() returns Result<Arc<AppState>, AppError>. After the ?, the value is Arc<AppState>. Deref gives &AppState, so .profile.id is &String behind an Arc \u2014 ownership cannot be moved out of an Arc without cloning. The clone is required, not unnecessary.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"An unnecessary `clone()`.\" Line 66 clones `profile_id` from the active state, but the value is only used by reference (line 71) and then moved into the error struct (line 75). The clone is not needed; the owned String can be passed by reference to `find` and subsequently moved into the error without the initial clone.",
+        "symbol": "reload_profile_creds",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "ActiveState::get() returns Arc<AppState>. Arc::deref() gives &AppState, so .profile.id is &String behind a shared reference. Rust does not let you move a field out from behind a shared reference. The finder mistook the &String (a borrow from inside the Arc) for an owned String that could be moved."
+      }
+    }
   },
   "src-tauri/src/commands/mod.rs": {
     "blob": "cb3f7f48adfdbd5cb7df891b4cc82165b12222a8",
@@ -505,7 +529,7 @@
     "findings": {}
   },
   "src-tauri/src/lib.rs": {
-    "blob": "1dd47f3802e0b9b855b902156001fa7952f546e0",
+    "blob": "910b683f49456e33a66fa03f79f86e7e66ce399f",
     "findings": {}
   },
   "src-tauri/src/main.rs": {
@@ -1228,7 +1252,7 @@
     "findings": {}
   },
   "src/lib/api.ts": {
-    "blob": "0f8862afd77f0343707e027ce0cdbf370e93d9af",
+    "blob": "38d15d50d2de82fbe947ed07bcaba3340326cb66",
     "findings": {}
   },
   "src/lib/app-clock.ts": {
@@ -1464,11 +1488,11 @@
     "findings": {}
   },
   "src/lib/components/calendar/GoogleReconnectHint.svelte": {
-    "blob": "f53387520a8d0e7881e42fec41c8299186191319",
+    "blob": "160877d32671ed4f70e6b6a351785d8d08a5dbeb",
     "findings": {}
   },
   "src/lib/components/calendar/GoogleReconnectHint.test.ts": {
-    "blob": "4d2c1f32e7a708b87766bbd2991757cf112d3a9c",
+    "blob": "ec14b8cee1b54f24dea6ce3fb3c4384bb25e8bb0",
     "findings": {
       "6106ac1b-4d65-4ede-bf2a-b18bfa9c7518": {
         "agent": "test-param-enforcer",
@@ -1685,7 +1709,7 @@
     "findings": {}
   },
   "src/lib/components/layout/Shell.test.ts": {
-    "blob": "4eb5b7595bd6880364982e939372de1e6ebd4768",
+    "blob": "6059555663373951710291e83ec8f4d3b4734fc7",
     "findings": {}
   },
   "src/lib/components/layout/ShortcutOverlay.svelte": {
@@ -1802,11 +1826,34 @@
     "findings": {}
   },
   "src/lib/components/settings/SettingsView.svelte": {
-    "blob": "dc3ea4056fb36ed73b6b3461dfb81b37a228f93c",
-    "findings": {}
+    "blob": "49642b8e2173208902e940b6092def8aa3abe715",
+    "findings": {
+      "c0cabda4-43f1-4958-9333-2a3941fc5143": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T10:27:38.176457+00:00",
+        "blob": "1d79ae67e40ccc4e7bc832de282bcb8759072398",
+        "session_reason": "The four handlers share only the outermost structure (set busy flag, call API, call onSyncError in catch). Their success callbacks are substantively different: handleSaveCreds resets 4 fields and shows a toast; handleConnect fires async openExternalUrl, updates status, and starts polling; handleDisconnectConfirm resets 5 state vars; handleCheckboxToggle adds an async re-fetch in its catch. These differ in more than one or two variables \u2014 they differ in the entire content of the then-callback and in the structure of the catch cleanup. The rule targets near-duplicates where only one or two variables differ; here the bodies are distinct multi-step state transitions. The shared error-handling logic is already extracted into onSyncError. Extracting callApiWithBusyState would add a callback indirection layer over idiomatic .then().catch() without removing any duplicated logic \u2014 the distinct state-update bodies would still exist as callbacks.",
+        "severity": "MAJOR",
+        "summary": "RULE(agent): \"Near-duplicate function bodies. Two functions differ in only one or two variables.\" The pattern of setting a busy flag, calling an API method with `.then()` and `.catch()`, and invoking `onSyncError` with a callback to clear the busy flag is repeated in four handler functions: `handleSaveCreds` (lines 62-80), `handleConnect` (lines 145-165), `handleDisconnectConfirm` (lines 167-186), and `handleCheckboxToggle` (lines 192-214). Each differs only in the API method called, the busy-state variable name, the success state updates, and the error message text. This violates the principle of extracting shared patterns.",
+        "symbol": "handleSaveCreds",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The four handlers share the standard async-busy-state skeleton (set flag, call API, reset flag in .then, onSyncError in .catch), but the finder mistook that common structural idiom for a near-duplicate. The rule requires functions to differ in only one or two variables. These differ in the entire success-callback body (different fields, different side effects, different control flow) and, in handleCheckboxToggle, in the catch structure too. The shared error path is already extracted into onSyncError."
+      },
+      "e2e0b4bf-15ce-494d-a2df-873d6ad86fd2": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T12:23:54.942853+00:00",
+        "blob": "49642b8e2173208902e940b6092def8aa3abe715",
+        "session_reason": "The source at line 61 already reads a.title.localeCompare(b.title). The finder claims the code reads a.localeCompare(b.title), but that is not what the file contains at the reviewed blob (49642b8e). The described bug does not exist in the source.",
+        "severity": "MAJOR",
+        "summary": "NO RULE: The sort comparator on line 61 calls `a.localeCompare(b.title)`, but `a` is an `ExternalCalendar` object, not a string. It should be `a.title.localeCompare(b.title)` to compare title strings. This will cause a TypeError when the sort executes because objects do not have a `localeCompare` method.",
+        "symbol": "sortedCalendars",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "Line 61 reads a.title.localeCompare(b.title), which correctly compares title strings. The finder hallucinated the code as a.localeCompare(b.title), claiming the object lacked localeCompare. The described bug does not exist in the source."
+      }
+    }
   },
   "src/lib/components/settings/SettingsView.test.ts": {
-    "blob": "6e858d72d729d19e3cdbbcad742ed6108fd76dca",
+    "blob": "a5730ac5587012451e2ae608d5ed27c869a3ee3f",
     "findings": {}
   },
   "src/lib/components/settings/backupSectionShared.ts": {
@@ -1818,7 +1865,7 @@
     "findings": {}
   },
   "src/lib/components/settings/settingsViewShared.ts": {
-    "blob": "7f940d7195db982ffae7452a3ef5b00534dd4fec",
+    "blob": "ecbce5a73cd46c022f39f751e5d27de10804d485",
     "findings": {}
   },
   "src/lib/components/shared/BadgeComponents.test.ts": {

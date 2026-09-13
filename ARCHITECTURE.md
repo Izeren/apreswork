@@ -28,7 +28,7 @@ graph TB
             AC[auth_commands.rs<br/>Google OAuth2 flow,<br/>calendar picker, manual pull,<br/>sync-now + status,<br/>user event CRUD]
             PC[profile_commands.rs<br/>profile gate, CRUD,<br/>switch]
             BC[backup_commands.rs<br/>status, enable, backup_now,<br/>export/import]
-            CC[credentials_commands.rs<br/>save Google client creds +<br/>restart]
+            CC[credentials_commands.rs<br/>save Google client creds +<br/>reload active profile]
         end
         subgraph ExternalAPI["External Access (localhost)"]
             REST["REST API (Axum)<br/>http_server/<br/>localhost:19532"]

@@ -103,6 +103,7 @@ pub fn run() {
             commands::backup_commands::backup_now,
             commands::backup_commands::export_backup_to_file,
             commands::backup_commands::import_backup_from_file,
+            commands::credentials_commands::google_client_credentials_saved,
             commands::credentials_commands::save_google_client_credentials,
         ])
         .setup(|app| {

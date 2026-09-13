@@ -13,7 +13,8 @@
 {#if visible}
   <div class="reconnect-hint" role="status" aria-live="polite">
     <span class="reconnect-hint__text">
-      Google Calendar is disconnected. Events shown below may be stale.
+      Google Calendar is disconnected. Events may be stale. Open Settings to reconnect or check your
+      OAuth credentials.
     </span>
     <button class="reconnect-hint__btn" onclick={onreconnect}>Open Settings</button>
   </div>
