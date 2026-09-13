@@ -1,8 +1,6 @@
 // Copyright 2026 Aleksandr Iushmanov (@izeren)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed load/save methods for [`ClientCredentialStore`] and credential probe.
-//!
 //! Defined here — not in `google_token.rs` — to avoid a circular module
 //! dependency: `google_token` does not import `google.rs`.
 
@@ -12,8 +10,6 @@ use crate::calendar::google::GoogleCredentials;
 use crate::calendar::google_token::{load_blob, save_blob, ClientCredentialStore};
 use crate::error::AppError;
 
-/// Private blob type for keyring serialization of [`GoogleCredentials`].
-///
 /// A private type prevents callers from serializing [`GoogleCredentials`]
 /// directly, which reduces the risk of credential exposure in logs or IPC.
 #[derive(Serialize, Deserialize)]
@@ -21,6 +17,9 @@ struct ClientCredBlob {
     client_id: String,
     client_secret: String,
 }
+
+const PROBE_CODE: &str = "probe_only";
+const PROBE_REDIRECT: &str = "http://127.0.0.1:9999";
 
 /// Google returns `"invalid_client"` when the credentials are wrong and any
 /// other response (for example `"invalid_grant"` or `"redirect_uri_mismatch"`)
@@ -38,9 +37,6 @@ pub(crate) fn probe_google_credentials(
     client_id: &str,
     client_secret: &str,
 ) -> Result<(), AppError> {
-    const PROBE_CODE: &str = "probe_only";
-    const PROBE_REDIRECT: &str = "http://127.0.0.1:9999";
-
     let client = reqwest::blocking::Client::builder()
         // SSRF prevention: re-POST with body (incl. client_secret) on 307/308
         // without this guard.
@@ -111,7 +107,7 @@ impl ClientCredentialStore {
 mod tests {
     use test_case::test_case;
 
-    use super::probe_google_credentials;
+    use super::{probe_google_credentials, PROBE_CODE};
     use crate::calendar::google_http::test_support::mock_server;
     use crate::error::AppError;
 
@@ -142,7 +138,7 @@ mod tests {
             body.contains("grant_type=authorization_code"),
             "body: {body}"
         );
-        assert!(body.contains("code=probe_only"), "body: {body}");
+        assert!(body.contains(&format!("code={PROBE_CODE}")), "body: {body}");
         assert!(body.contains("client_id=bad-id"), "body: {body}");
         assert!(body.contains("client_secret=bad-secret"), "body: {body}");
         assert!(body.contains("redirect_uri="), "body: {body}");
@@ -180,10 +176,9 @@ mod tests {
         )]);
         let url = format!("{base}/token");
         let secret = "GOCSPX-super-secret-value-12345";
-        let err_msg = match probe_google_credentials(&url, "some-id", secret) {
-            Err(AppError::Validation(msg)) => msg,
-            other => panic!("expected Validation error, got: {other:?}"),
-        };
+        let err_msg = probe_google_credentials(&url, "some-id", secret)
+            .expect_err("expected Validation error for invalid_client response")
+            .to_string();
         handle.join().expect("mock server panicked");
         assert!(
             !err_msg.contains(secret),

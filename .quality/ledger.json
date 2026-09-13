@@ -4,7 +4,7 @@
     "findings": {}
   },
   "src-tauri/src/api/http_server/mod.rs": {
-    "blob": "6e61dccecca79d3f41f611521fd124d7b8a4bda8",
+    "blob": "b503af9ba3493356102cdb3798b550c09769042b",
     "findings": {}
   },
   "src-tauri/src/api/http_server/tests/auth.rs": {
@@ -36,8 +36,20 @@
     }
   },
   "src-tauri/src/api/http_server/tests/mod.rs": {
-    "blob": "a2b1de4128c4b0af62489bd08ce8ed578741e667",
-    "findings": {}
+    "blob": "e5521ac6e0b9bad53caa0a2b3ef9664db24db001",
+    "findings": {
+      "6e512c3f-2727-47dd-9f4d-d1f54810a0ba": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T15:09:43.893494+00:00",
+        "blob": "9c91b78a4aa76192cfca65e17ee7da232ea8f79d",
+        "session_reason": "The five constants (lines 43-47) are used directly in #[test_case] attributes, which require const-compatible &str expressions. Stable Rust cannot build a const &str from a u16 at compile time without external macros (const_format, etc.), so non-const format helpers are not viable here: they return String and cannot be borrowed across the attribute boundary into a &str. The comment above the constants already documents that the port value is DEFAULT_API_PORT and must be kept in sync manually. The constraint that prevents elimination of the numeric literal is the absence of const string interpolation from a u16 in stable Rust.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"A magic literal. A number or a numeric string has no name.\" The numeric string '19532' appears in five string constants (lines 43\u201347) and matches the imported DEFAULT_API_PORT constant. These constants could be constructed at runtime from DEFAULT_API_PORT to avoid duplication and keep the port synchronized if DEFAULT_API_PORT changes.",
+        "symbol": "<file>",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The value 19532 is named: it is DEFAULT_API_PORT, imported on line 20 and documented in the comment on line 42. The five const &str values embed it because stable Rust cannot compose a const &str from a u16, and #[test_case] attributes require const expressions. The finder mistook a documented, language-constrained duplication for an unnamed magic literal."
+      }
+    }
   },
   "src-tauri/src/api/http_server/tests/profiles.rs": {
     "blob": "e993445b6e4b0e4f15a926733347b6fd04573d1b",
@@ -84,7 +96,7 @@
     "findings": {}
   },
   "src-tauri/src/calendar/google_client_creds.rs": {
-    "blob": "cc9b9dd7a919a7a3e251be4545f57fc8b8e3b2ee",
+    "blob": "47c6d29975639bf8523d9c276d08807207e058fd",
     "findings": {}
   },
   "src-tauri/src/calendar/google_http.rs": {
@@ -124,8 +136,31 @@
     "findings": {}
   },
   "src-tauri/src/commands/auth_commands.rs": {
-    "blob": "4e1eab6556f0b7787b8c8b5803072c79636b4b1a",
-    "findings": {}
+    "blob": "0464e0ed56ad7040898eed250d424efe15dfeb18",
+    "findings": {
+      "24678bb3-f2f2-46be-9fba-689e5ee7eb64": {
+        "agent": "doc-slop-reviewer",
+        "at": "2026-09-13T14:11:48.958328+00:00",
+        "blob": "8392b399ca11d77056f1a358838c3abb16a21ea6",
+        "session_reason": "run_pull_and_reschedule names pull_external_events and POST /api/calendar/pull; run_sync_now names sync_now and POST /api/sync/now. Both paragraphs carry caller-specific information the other does not. Replacing run_sync_now's paragraph with a pointer loses which command and REST route share that function. Structural similarity is not content duplication.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"A comment that repeats another comment. Two comments in the file explain the same mechanism... Keep the comment at the code that owns the behavior. Replace the others with a pointer.\" Lines 187-189 duplicate the shared Tauri/REST spawn_blocking pattern explanation from lines 145-148 in run_pull_and_reschedule. The exact text is repeated for sync_now/sync command pair instead of a pointer to the first explanation.",
+        "symbol": "run_sync_now",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "Each paragraph documents a different function's caller set (run_pull_and_reschedule is called by pull_external_events + POST /api/calendar/pull; run_sync_now is called by sync_now + POST /api/sync/now). The finder mistook structural similarity of a documentation template for conceptual duplication. The rule targets two comments that explain the same mechanism, but these comments answer 'who calls this function?' for two different functions with different callers. Both already point to CLAUDE.md for the shared mechanism."
+      },
+      "43416d9e-14fc-4f1a-b258-a9dda4577f6e": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T14:00:31.634180+00:00",
+        "blob": "fbd076304cd41e2faa551b9e8c8c315eb3428f6b",
+        "session_reason": "The three Tauri commands (create_user_event, update_user_event, delete_user_event) have different parameter lists (different arity and types), call different service functions with different arity, and return different types. The shared skeleton is exactly two lines: destructure handles, pass to run_blocking. Creating a generic closure-taking helper would require Box<dyn FnOnce> or similar indirection, trading three readable 8-line functions for an abstraction that hides which service function is called. This is standard Tauri command scaffolding, not copy-paste duplication.",
+        "severity": "MAJOR",
+        "summary": "RULE(agent): \"Near-duplicate function bodies. Two functions differ in only one or two variables.\" Three async command wrappers (`create_user_event`, `update_user_event`, `delete_user_event`) share identical structure: extract handles, destructure to `(store, sync, scheduler, trigger)`, call `run_blocking` with a service function, pass the same four dereferences plus `Utc::now()`. The trio differs only in the service function name and parameter list. Also affects `pull_external_events` and `sync_now` which follow the same pattern with handles extraction and `run_blocking` delegation.",
+        "symbol": "create_user_event",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The three functions (create_user_event, update_user_event, delete_user_event) differ in four dimensions \u2014 parameter list (different arity and types), return type, service function called, and message string \u2014 not one or two variables as the rule requires. The finder treated the shared thin-wrapper skeleton (destructure handles, call run_blocking, await) as near-duplicate bodies, but that skeleton is the irreducible pattern for an async Tauri command wrapper that delegates to a service through a blocking task."
+      }
+    }
   },
   "src-tauri/src/commands/backup_commands.rs": {
     "blob": "9cb0a4499d0f2a664eebf3c0d1ec7424106b8eb6",
@@ -331,7 +366,7 @@
     "findings": {}
   },
   "src-tauri/src/lib.rs": {
-    "blob": "910b683f49456e33a66fa03f79f86e7e66ce399f",
+    "blob": "0b31449a0b7532b6ab97b7002cbde1dc88ccc93d",
     "findings": {}
   },
   "src-tauri/src/main.rs": {
@@ -754,7 +789,7 @@
     "findings": {}
   },
   "src/lib/api.ts": {
-    "blob": "38d15d50d2de82fbe947ed07bcaba3340326cb66",
+    "blob": "51732ae0b256737a1d618abde402150140f2a771",
     "findings": {}
   },
   "src/lib/app-clock.ts": {
@@ -1005,7 +1040,7 @@
     "findings": {}
   },
   "src/lib/components/layout/Shell.test.ts": {
-    "blob": "6059555663373951710291e83ec8f4d3b4734fc7",
+    "blob": "cbc1c7ff1c03a5ed205649ac31fa778ea2b4cc81",
     "findings": {}
   },
   "src/lib/components/layout/ShortcutOverlay.svelte": {
@@ -1077,11 +1112,23 @@
     "findings": {}
   },
   "src/lib/components/settings/SettingsView.svelte": {
-    "blob": "efd872e864269135dea1583b9a16dbc4919d71a3",
-    "findings": {}
+    "blob": "ae5285ce598f6e057313a8755da05db531f8fce0",
+    "findings": {
+      "94f43ac8-ff4c-4167-abaa-da074590ff47": {
+        "agent": "code-smell-nitpicker",
+        "at": "2026-09-13T14:00:38.919493+00:00",
+        "blob": "ae5285ce598f6e057313a8755da05db531f8fce0",
+        "session_reason": "The two hex values (#6366f1, #dc2626) are CSS custom property fallback values in var(--color-primary, #6366f1) expressions inside a Svelte style block. CSS var() fallbacks are inline by design; they cannot be replaced by JavaScript constants. The custom properties are always defined globally in app.css, so the fallbacks are redundant insurance. The correct resolution is to remove the fallback values entirely (not to name them as JS constants which cannot be used in CSS var() expressions). This fix proposal is technically incorrect for CSS var() fallbacks and the pattern is pre-existing code not changed by this session's clearSyncError addition.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"A magic literal. A number or a numeric string has no name.\" Two hardcoded hex color values are used as CSS custom property fallback values in the style block: #6366f1 (primary color) and #dc2626 (danger color). These are design tokens that should be extracted as named constants or moved to a shared theme file rather than duplicated across components.",
+        "symbol": "<file>",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The hex values #6366f1 and #dc2626 each appear once, at lines 463-464, as definitions of CSS custom properties --color-primary-fallback and --color-danger-fallback. Every subsequent reference uses the property name via var(). These are CSS color strings, not numbers or numeric strings as the rule specifies. The finder treated the definition site of a named CSS variable as an unnamed magic literal."
+      }
+    }
   },
   "src/lib/components/settings/SettingsView.test.ts": {
-    "blob": "a5730ac5587012451e2ae608d5ed27c869a3ee3f",
+    "blob": "6108032350660919ef178b103f8b9e6912ecfa5a",
     "findings": {}
   },
   "src/lib/components/settings/backupSectionShared.ts": {
@@ -1093,7 +1140,7 @@
     "findings": {}
   },
   "src/lib/components/settings/settingsViewShared.ts": {
-    "blob": "ecbce5a73cd46c022f39f751e5d27de10804d485",
+    "blob": "632ca45b916ba352deb10f9b5e445edb6ae087c3",
     "findings": {}
   },
   "src/lib/components/shared/BadgeComponents.test.ts": {

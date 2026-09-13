@@ -15,6 +15,7 @@ export interface SettingsViewApi {
   setPullCalendars: (calendarIds: string[]) => Promise<void>;
   googleDisconnect: () => Promise<void>;
   getSyncStatus: () => Promise<SyncStatus>;
+  clearSyncError: () => Promise<void>;
   syncNow: () => Promise<SyncOutcome>;
   syncErrorMessage: (e: unknown, fallback: string) => string;
 }
@@ -35,6 +36,7 @@ export const defaultSettingsViewApi: SettingsViewApi = {
   setPullCalendars: api.setPullCalendars,
   googleDisconnect: api.googleDisconnect,
   getSyncStatus: api.getSyncStatus,
+  clearSyncError: api.clearSyncError,
   syncNow: api.syncNow,
   syncErrorMessage: api.syncErrorMessage,
 };

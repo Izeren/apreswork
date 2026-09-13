@@ -76,6 +76,7 @@ let fakeApi: {
   setPullCalendars: MockInstance<(calendarIds: string[]) => Promise<void>>;
   googleDisconnect: MockInstance<() => Promise<void>>;
   getSyncStatus: MockInstance<() => Promise<SyncStatus>>;
+  clearSyncError: MockInstance<() => Promise<void>>;
   syncNow: MockInstance<() => Promise<SyncOutcome>>;
   syncErrorMessage: (e: unknown, fallback: string) => string;
 } & SettingsViewApi;
@@ -97,6 +98,7 @@ beforeEach(() => {
     setPullCalendars: vi.fn<(calendarIds: string[]) => Promise<void>>(),
     googleDisconnect: vi.fn<() => Promise<void>>(),
     getSyncStatus: vi.fn<() => Promise<SyncStatus>>(),
+    clearSyncError: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
     syncNow: vi.fn<() => Promise<SyncOutcome>>(),
     syncErrorMessage: (e, fallback) => syncErrorMessage(e, fallback),
   };
@@ -887,5 +889,30 @@ describe('SettingsView — OAuth client credentials', () => {
     expect(queryByRole('alert')).toBeNull();
     expect(queryByText('Calendar sync error: token refresh failed with HTTP 401')).toBeNull();
     expect(fakeApi.googleListCalendars).toHaveBeenCalledTimes(INITIAL_CALL_PLUS_ONE);
+  });
+
+  it('reconnect banner hides after polling detects successful reconnect', async () => {
+    vi.useFakeTimers();
+    fakeApi.googleClientCredentialsSaved.mockResolvedValue(true);
+    mockConnected({
+      syncStatus: { last_sync_at: null, last_sync_error: 'Calendar sync error: HTTP 401' },
+    });
+    fakeApi.beginGoogleAuth.mockResolvedValue('https://accounts.google.com/o/oauth2/auth');
+    fakeApi.openExternalUrl.mockResolvedValue(undefined);
+    fakeApi.googleListCalendars.mockResolvedValue([]);
+    fakeApi.getPullCalendars.mockResolvedValue([]);
+
+    const { queryByRole, getByText } = await mountAndFlush(FLUSHES_SINGLE_LAYER);
+    expect(queryByRole('alert')).toBeTruthy();
+
+    await fireEvent.click(getByText('Reconnect now'));
+    await flush();
+
+    fakeApi.googleAuthStatus.mockResolvedValue({ type: 'connected', email: 'user@example.com' });
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await flush();
+
+    expect(queryByRole('alert')).toBeNull();
+    expect(fakeApi.clearSyncError).toHaveBeenCalledOnce();
   });
 });

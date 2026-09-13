@@ -55,7 +55,7 @@ const TEST_BACKUP_EXPORT_TIMESTAMP = '2026-07-12T10:00:00Z';
 const TEST_BACKUP_RESTORE_TIMESTAMP = '2026-07-12T09:30:00Z';
 const TEST_TASK_EPOCH = '2026-01-01T00:00:00Z';
 
-/** Quiet default — no restore this run. Shell AND the mounted BackupSection read it. */
+/** Shell AND the mounted BackupSection read it. */
 const QUIET_BACKUP_STATUS: BackupStatus = {
   enabled: false,
   connected: false,
@@ -106,6 +106,7 @@ beforeEach(() => {
     setPullCalendars: vi.fn(),
     googleDisconnect: vi.fn(),
     getSyncStatus: vi.fn(),
+    clearSyncError: vi.fn().mockResolvedValue(undefined),
     syncNow: vi.fn(),
     syncErrorMessage,
   };
@@ -400,18 +401,21 @@ describe('Shell — status warnings modal', () => {
     },
   };
 
+  const TEST_TASK_DURATION_MINUTES = 60;
+  const TEST_MIN_CHUNK_MINUTES = 15;
+
   const TASK: Task = {
     id: 'task-1',
     title: 'Alpha task',
     description: null,
-    duration_minutes: 60,
+    duration_minutes: TEST_TASK_DURATION_MINUTES,
     time_logged_minutes: 0,
     priority: 'Medium',
     status: 'scheduled',
     start_date: null,
     deadline: TEST_DEADLINE_TIMESTAMP,
     schedule_id: 'sched-1',
-    min_chunk_minutes: 15,
+    min_chunk_minutes: TEST_MIN_CHUNK_MINUTES,
     no_split: false,
     recurring_template_id: null,
     labels: [],

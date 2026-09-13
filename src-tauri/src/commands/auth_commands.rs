@@ -23,6 +23,10 @@ use crate::traits::scheduling::ScheduleResult;
 /// Run `f` on a blocking-safe worker thread (`spawn_blocking`) and await it,
 /// mapping a cancelled/panicked task to [`AppError::Internal`]. `what` names
 /// the task in the error message.
+///
+/// Use this for any provider call that makes blocking HTTP requests — those
+/// must not run on a tokio worker thread (constructing or dropping a
+/// `reqwest::blocking::Client` there panics with "Cannot drop a runtime…").
 async fn run_blocking<T>(
     what: &str,
     f: impl FnOnce() -> Result<T, AppError> + Send + 'static,
@@ -43,7 +47,7 @@ where
 ///
 /// # IMPORTANT
 ///
-/// This command never opens anything itself. It only returns a URL string.
+/// This command never opens anything itself.
 ///
 /// # Errors
 ///
@@ -118,9 +122,6 @@ pub fn set_pull_calendars(
 
 /// List calendars visible to the connected account.
 ///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
-///
 /// # Errors
 ///
 /// Returns [`AppError::CalendarSync`] on provider or network error.
@@ -141,9 +142,6 @@ pub async fn google_list_calendars(
 /// the mutation guard (network; must not hold a mutex across I/O), and the guard
 /// is held only around the reschedule itself.
 ///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
-///
 /// Shared by the `pull_external_events` Tauri command and the REST
 /// `POST /api/calendar/pull` handler — each awaits this via its own
 /// `spawn_blocking`-flavored `run_blocking` (see the "Provider / async lore"
@@ -154,14 +152,17 @@ pub async fn google_list_calendars(
 /// Returns [`AppError::CalendarSync`] if the pull or `list_events` call fails.
 /// Returns [`AppError::Database`] or [`AppError::Internal`] on scheduling
 /// failure.
-pub fn run_pull_and_reschedule(handles: SyncWriteHandles) -> Result<ScheduleResult, AppError> {
+pub fn run_pull_and_reschedule(
+    handles: SyncWriteHandles,
+    now: chrono::DateTime<Utc>,
+) -> Result<ScheduleResult, AppError> {
     let (store, sync, scheduler, trigger) = handles;
     crate::services::sync::pull_and_reschedule(
         store.as_ref(),
         sync.as_ref(),
         scheduler.as_ref(),
         trigger.as_ref(),
-        Utc::now(),
+        now,
     )
 }
 
@@ -176,7 +177,8 @@ pub async fn pull_external_events(
     active: tauri::State<'_, ActiveState>,
 ) -> Result<ScheduleResult, AppError> {
     let handles = active.sync_write_handles()?;
-    run_blocking("pull", move || run_pull_and_reschedule(handles)).await
+    let now = Utc::now();
+    run_blocking("pull", move || run_pull_and_reschedule(handles, now)).await
 }
 
 /// Manual full sync: pull the external mirror, fully reschedule, then push
@@ -184,9 +186,6 @@ pub async fn pull_external_events(
 ///
 /// Delegates to [`crate::services::sync::sync_now`], which also records the
 /// `last_sync_at` / `last_sync_error` bookkeeping read by `get_sync_status`.
-///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
 ///
 /// Shared by the `sync_now` Tauri command and the REST `POST /api/sync/now`
 /// handler — each awaits this via its own `spawn_blocking`-flavored
@@ -200,6 +199,7 @@ pub async fn pull_external_events(
 /// bookkeeping failure.
 pub fn run_sync_now(
     handles: SyncWriteHandles,
+    now: chrono::DateTime<Utc>,
 ) -> Result<crate::services::sync::SyncOutcome, AppError> {
     let (store, sync, scheduler, trigger) = handles;
     crate::services::sync::sync_now(
@@ -207,7 +207,7 @@ pub fn run_sync_now(
         sync.as_ref(),
         scheduler.as_ref(),
         trigger.as_ref(),
-        Utc::now(),
+        now,
     )
 }
 
@@ -222,7 +222,8 @@ pub async fn sync_now(
     active: tauri::State<'_, ActiveState>,
 ) -> Result<crate::services::sync::SyncOutcome, AppError> {
     let handles = active.sync_write_handles()?;
-    run_blocking("sync", move || run_sync_now(handles)).await
+    let now = Utc::now();
+    run_blocking("sync", move || run_sync_now(handles, now)).await
 }
 
 /// Return the last-sync bookkeeping for the Settings UI. No network call.
@@ -236,15 +237,24 @@ pub fn get_sync_status(active: tauri::State<'_, ActiveState>) -> Result<SyncStat
     crate::services::sync::get_sync_status(state.store.as_ref())
 }
 
+/// Call this after a successful OAuth reconnect so that the stale error does
+/// not reappear on the next app open (before a new sync has run).
+///
+/// # Errors
+///
+/// Returns [`AppError::Database`] on storage failure.
+#[tauri::command]
+pub fn clear_sync_error(active: tauri::State<'_, ActiveState>) -> Result<(), AppError> {
+    let state = active.get()?;
+    state.store.set_config_value("last_sync_error", "")
+}
+
 /// Create a user-owned calendar event, write it through to the provider, mirror
-/// it locally, and reschedule. Returns the mirrored event record.
+/// it locally, and reschedule.
 ///
 /// Delegates to [`crate::services::sync::create_user_event`]: the provider write
 /// runs first (network; outside the mutation guard), then the local mirror write
 /// and full reschedule run under the guard.
-///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
 ///
 /// # Errors
 ///
@@ -276,14 +286,10 @@ pub async fn create_user_event(
 }
 
 /// Update a user-owned calendar event, write through, re-mirror, and reschedule.
-/// Returns the re-mirrored event record.
 ///
 /// Delegates to [`crate::services::sync::update_user_event`]. The event must
 /// already exist in the local mirror (trust-boundary guard); an unknown id yields
 /// [`AppError::NotFound`] before any provider call.
-///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
 ///
 /// # Errors
 ///
@@ -319,12 +325,8 @@ pub async fn update_user_event(
 
 /// Delete a user-owned calendar event, remove it from the mirror, and reschedule.
 ///
-/// Delegates to [`crate::services::sync::delete_user_event`]. The event must
-/// already exist in the local mirror (trust-boundary guard); an unknown id yields
-/// [`AppError::NotFound`] before any provider call.
-///
-/// Uses `spawn_blocking` because the underlying provider makes blocking HTTP
-/// calls that must not run on a tokio worker thread.
+/// Delegates to [`crate::services::sync::delete_user_event`]; see [`update_user_event`] for
+/// the trust-boundary guard.
 ///
 /// # Errors
 ///
