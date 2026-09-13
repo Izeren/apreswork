@@ -136,8 +136,19 @@
     "findings": {}
   },
   "src-tauri/src/commands/auth_commands.rs": {
-    "blob": "0464e0ed56ad7040898eed250d424efe15dfeb18",
+    "blob": "6e4dafd84fe058b7fd1ef3242d622c25544ce4f4",
     "findings": {
+      "1274d059-b438-4bf5-b1ab-3c03ddde6cf8": {
+        "agent": "doc-slop-reviewer",
+        "at": "2026-09-13T15:44:46.686040+00:00",
+        "blob": "11a80bb4573f248dd18567038cb74205dd37e76a",
+        "session_reason": "The two # Errors sections are interface contracts for parallel Tauri commands, not mechanism explanations. Both pull_external_events and sync_now independently return AppError::Internal when the blocking task is cancelled; each must document that in its own # Errors section. A pointer from sync_now's # Errors to pull_external_events would be misleading \u2014 the two are not caller/callee, they are parallel commands with independent error surfaces. The rule targets duplicate mechanism explanations in prose; it does not apply to parallel # Errors entries that name the same error variant for the same independent reason.",
+        "severity": "MINOR",
+        "summary": "RULE(agent): \"A comment that repeats another comment. Two comments in the file explain the same mechanism... Keep the comment at the code that owns the behavior. Replace the others with a pointer.\" Lines 168 (pull_external_events) and 207 (sync_now) both document identical run_blocking error behavior: \"Returns [`AppError::Internal`] if the blocking task is cancelled.\" Replace sync_now's explanation with a pointer to pull_external_events.",
+        "symbol": "pull_external_events",
+        "verifier": "swarm-verifier",
+        "verifier_reason": "The two comments are per-function # Errors contract entries on independent Tauri commands (pull_external_events and sync_now), not duplicated mechanism explanations. The mechanism is documented at run_blocking (line 23). The finder mistook standard Rust API-contract documentation that names the same error variant for prose duplication. The proposed pointer from sync_now to pull_external_events would be misleading because the two are sibling commands with no caller-callee relationship."
+      },
       "24678bb3-f2f2-46be-9fba-689e5ee7eb64": {
         "agent": "doc-slop-reviewer",
         "at": "2026-09-13T14:11:48.958328+00:00",

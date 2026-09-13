@@ -136,16 +136,11 @@ pub async fn google_list_calendars(
     run_blocking("calendar list", move || sync.list_calendars(now)).await
 }
 
-/// Manually refresh the external-event mirror then run a full reschedule.
+/// Refresh the external-event mirror then run a full reschedule.
 ///
 /// Delegates to [`crate::services::sync::pull_and_reschedule`]: pull is outside
 /// the mutation guard (network; must not hold a mutex across I/O), and the guard
 /// is held only around the reschedule itself.
-///
-/// Shared by the `pull_external_events` Tauri command and the REST
-/// `POST /api/calendar/pull` handler — each awaits this via its own
-/// `spawn_blocking`-flavored `run_blocking` (see the "Provider / async lore"
-/// note in `src-tauri/CLAUDE.md` for why those stay separate).
 ///
 /// # Errors
 ///
@@ -166,6 +161,30 @@ pub fn run_pull_and_reschedule(
     )
 }
 
+/// Get handles and `now`, then run `f` on a blocking worker.
+///
+/// Mirrors `run_sync_handles_op` in the REST layer — kept separate because
+/// Tauri's `spawn_blocking` is distinct from Axum's; see the "Provider / async
+/// lore" note in `src-tauri/CLAUDE.md`.
+///
+/// # Errors
+///
+/// Returns [`AppError::Validation`] if no profile is active.
+/// Returns [`AppError::Internal`] if the blocking task is cancelled.
+/// Propagates any error from `f`.
+async fn run_sync_tauri_op<T>(
+    active: &tauri::State<'_, ActiveState>,
+    task_name: &'static str,
+    f: impl FnOnce(SyncWriteHandles, chrono::DateTime<Utc>) -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError>
+where
+    T: Send + 'static,
+{
+    let handles = active.sync_write_handles()?;
+    let now = Utc::now();
+    run_blocking(task_name, move || f(handles, now)).await
+}
+
 /// See [`run_pull_and_reschedule`] for the pull/reschedule behavior.
 ///
 /// # Errors
@@ -176,21 +195,13 @@ pub fn run_pull_and_reschedule(
 pub async fn pull_external_events(
     active: tauri::State<'_, ActiveState>,
 ) -> Result<ScheduleResult, AppError> {
-    let handles = active.sync_write_handles()?;
-    let now = Utc::now();
-    run_blocking("pull", move || run_pull_and_reschedule(handles, now)).await
+    run_sync_tauri_op(&active, "pull", run_pull_and_reschedule).await
 }
 
-/// Manual full sync: pull the external mirror, fully reschedule, then push
-/// chunks to the dedicated app calendar.
+/// Pull the external mirror, fully reschedule, then push chunks to the app calendar.
 ///
 /// Delegates to [`crate::services::sync::sync_now`], which also records the
 /// `last_sync_at` / `last_sync_error` bookkeeping read by `get_sync_status`.
-///
-/// Shared by the `sync_now` Tauri command and the REST `POST /api/sync/now`
-/// handler — each awaits this via its own `spawn_blocking`-flavored
-/// `run_blocking` (see the "Provider / async lore" note in
-/// `src-tauri/CLAUDE.md` for why those stay separate).
 ///
 /// # Errors
 ///
@@ -221,9 +232,7 @@ pub fn run_sync_now(
 pub async fn sync_now(
     active: tauri::State<'_, ActiveState>,
 ) -> Result<crate::services::sync::SyncOutcome, AppError> {
-    let handles = active.sync_write_handles()?;
-    let now = Utc::now();
-    run_blocking("sync", move || run_sync_now(handles, now)).await
+    run_sync_tauri_op(&active, "sync", run_sync_now).await
 }
 
 /// Return the last-sync bookkeeping for the Settings UI. No network call.
