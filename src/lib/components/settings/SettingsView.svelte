@@ -83,11 +83,10 @@
   function handleSaveCreds(e: SubmitEvent): void {
     e.preventDefault();
     if (!validateCredForm()) return;
-    savingCreds = true;
-    apiClient
-      .saveGoogleClientCredentials(credClientId, credClientSecret)
-      .then(() => {
-        savingCreds = false;
+    withBusy(
+      (v) => (savingCreds = v),
+      () => apiClient.saveGoogleClientCredentials(credClientId, credClientSecret),
+      () => {
         showCredForm = false;
         credentialsSaved = true;
         credClientId = '';
@@ -98,12 +97,9 @@
         calendarsError = null;
         if (status?.type === 'connected') loadPicker();
         toastState.success('OAuth credentials saved.');
-      })
-      .catch((err: unknown) => {
-        onSyncError(err, 'Could not save credentials.', () => {
-          savingCreds = false;
-        });
-      });
+      },
+      'Could not save credentials.',
+    );
   }
 
   function stopPolling(): void {
@@ -169,47 +165,62 @@
     endBusy();
   }
 
+  function withBusy<T>(
+    setBusy: (v: boolean) => void,
+    call: () => Promise<T>,
+    onSuccess: (r: T) => void,
+    errorMsg: string,
+    onErrorExtra?: () => void,
+  ): void {
+    setBusy(true);
+    call()
+      .then((r) => {
+        setBusy(false);
+        onSuccess(r);
+      })
+      .catch((err: unknown) => {
+        onSyncError(err, errorMsg, () => {
+          setBusy(false);
+          onErrorExtra?.();
+        });
+      });
+  }
+
   function handleConnect(): void {
     stopPolling();
-    connecting = true;
-    apiClient
-      .beginGoogleAuth()
-      .then((url) => {
+    withBusy(
+      (v) => (connecting = v),
+      () => apiClient.beginGoogleAuth(),
+      (url) => {
         apiClient.openExternalUrl(url).catch(() => {
           // The consent flow is still live backend-side; polling continues
           // so a manually opened browser can complete it.
           toastState.error('Could not open the browser for Google sign-in.');
         });
         status = { type: 'pending' };
-        connecting = false;
         startPolling();
-      })
-      .catch((e) => {
-        onSyncError(e, 'Could not start Google sign-in.', () => {
-          connecting = false;
-        });
-      });
+      },
+      'Could not start Google sign-in.',
+    );
   }
 
   function handleDisconnectConfirm(): void {
-    disconnecting = true;
-    apiClient
-      .googleDisconnect()
-      .then(() => {
+    withBusy(
+      (v) => (disconnecting = v),
+      () => apiClient.googleDisconnect(),
+      () => {
         confirmDisconnect = false;
-        disconnecting = false;
         calendars = null;
         selectedIds = [];
         calendarsError = null;
         status = { type: 'not_connected' };
         toastState.success('Google Calendar disconnected.');
-      })
-      .catch((e) => {
-        onSyncError(e, 'Could not disconnect.', () => {
-          confirmDisconnect = false;
-          disconnecting = false;
-        });
-      });
+      },
+      'Could not disconnect.',
+      () => {
+        confirmDisconnect = false;
+      },
+    );
   }
 
   function handleDisconnectCancel(): void {
@@ -219,25 +230,22 @@
   function handleCheckboxToggle(id: string, checked: boolean): void {
     const next = checked ? [...selectedIds, id] : selectedIds.filter((x) => x !== id);
     selectedIds = next;
-    savingSelection = true;
-    apiClient
-      .setPullCalendars(next)
-      .then(() => {
-        savingSelection = false;
-      })
-      .catch((e) => {
-        onSyncError(e, 'Could not save calendar selection.', () => {
-          savingSelection = false;
-          apiClient
-            .getPullCalendars()
-            .then((ids) => {
-              selectedIds = ids;
-            })
-            .catch(() => {
-              // Refetch failed after a toasted save error; keep the optimistic value.
-            });
-        });
-      });
+    withBusy(
+      (v) => (savingSelection = v),
+      () => apiClient.setPullCalendars(next),
+      () => {},
+      'Could not save calendar selection.',
+      () => {
+        apiClient
+          .getPullCalendars()
+          .then((ids) => {
+            selectedIds = ids;
+          })
+          .catch(() => {
+            // Refetch failed after a toasted save error; keep the optimistic value.
+          });
+      },
+    );
   }
 
   function handleSyncNow(): void {
