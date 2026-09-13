@@ -28,6 +28,7 @@ graph TB
             AC[auth_commands.rs<br/>Google OAuth2 flow,<br/>calendar picker, manual pull,<br/>sync-now + status,<br/>user event CRUD]
             PC[profile_commands.rs<br/>profile gate, CRUD,<br/>switch]
             BC[backup_commands.rs<br/>status, enable, backup_now,<br/>export/import]
+            CC[credentials_commands.rs<br/>save Google client creds +<br/>restart]
         end
         subgraph ExternalAPI["External Access (localhost)"]
             REST["REST API (Axum)<br/>http_server/<br/>localhost:19532"]
@@ -155,6 +156,7 @@ graph LR
         subgraph calendar["calendar/"]
             c_mod["mod.rs<br/><i>providers_from_config:<br/>calendar-sync + backup pair</i>"]
             c_google["google.rs<br/><i>GoogleCalendarSync:<br/>loopback PKCE flow,<br/>token refresh</i>"]
+            c_gcreds["google_client_creds.rs<br/><i>typed load/save impl<br/>for ClientCredentialStore<br/>(struct lives in google_token.rs)</i>"]
             c_http["google_http.rs<br/><i>REST list/CRUD calls,<br/>401 refresh, 403/429 backoff;<br/>batch.rs: multipart batch push<br/>(≤250/req = BATCH_MAX_OPS)</i>"]
             c_token["google_token.rs<br/><i>KeyringStore (OS keyring);<br/>refresh token persisted,<br/>access token memory-only</i>"]
             c_noop["noop.rs<br/><i>NoopCalendarSync:<br/>offline/disabled fallback</i>"]
@@ -198,6 +200,7 @@ graph LR
             cmd_auth["auth_commands.rs"]
             cmd_profile["profile_commands.rs"]
             cmd_backup["backup_commands.rs"]
+            cmd_creds["credentials_commands.rs"]
         end
 
         subgraph api["api/"]

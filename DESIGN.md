@@ -90,6 +90,7 @@ src-tauri/src/
   calendar/
     mod.rs                     # providers_from_config: one policy selecting the calendar-sync + backup pair
     google.rs                  # GoogleCalendarSync impl — loopback PKCE flow, token refresh
+    google_client_creds.rs     # Typed load/save methods for ClientCredentialStore (split from google.rs to stay under the 1000-line limit)
     google_http.rs             # Google Calendar REST list/CRUD calls (list_events, user-event write-through), 401 refresh-once, 403/429 backoff (BackoffPolicy)
     google_http/batch.rs       # Multipart batch push (batch_sync_ops, ≤250 ops/req = BATCH_MAX_OPS), per-part backoff
     google_token.rs            # KeyringStore (OS keyring via keyring crate); StoredToken (OAuth exchange result, in-memory only; TokenFile test-only legacy)
@@ -140,6 +141,7 @@ src-tauri/src/
     auth_commands.rs           # Tauri commands: google auth, calendar picker, manual pull, sync-now/status, user-event CRUD
     profile_commands.rs        # Tauri commands: profile status/unlock/create/rename/delete/switch
     backup_commands.rs         # Tauri commands: backup status/toggle/now, file export/import
+    credentials_commands.rs    # Tauri commands: save Google OAuth client credentials to the OS keyring + restart
 
   api/
     mod.rs

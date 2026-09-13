@@ -3,12 +3,13 @@
 
 //! Concrete calendar-sync providers.
 //!
-//! [`providers_from_config`] is the composition-root helper that selects the
-//! active calendar-sync provider AND the matching backup target based on the
-//! `sync_provider` config key and the availability of compiled-in
-//! credentials. One selection policy: the pair always agrees on the account.
+//! Composition-root helper that selects the active calendar-sync provider and
+//! matching backup target. Selection is based on the `sync_provider` config
+//! key and the availability of resolved credentials.
+//! One selection policy: the pair always agrees on the account.
 
 pub mod google;
+pub(crate) mod google_client_creds;
 pub(crate) mod google_http;
 pub mod google_token;
 pub mod noop;
@@ -17,22 +18,50 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backup::{google_drive::GoogleDriveBackup, noop::NoopBackupTarget};
+use crate::error::AppError;
 use crate::traits::backup::BackupTarget;
 use crate::traits::calendar_sync::CalendarSync;
+
+const SYNC_PROVIDER_GOOGLE: &str = "google";
 
 fn noop_providers() -> (Arc<dyn CalendarSync>, Arc<dyn BackupTarget>) {
     (Arc::new(noop::NoopCalendarSync), Arc::new(NoopBackupTarget))
 }
 
-/// Select the active [`CalendarSync`] provider and its [`BackupTarget`].
-///
-/// Rules:
-/// - `sync_provider == "google"` AND compiled-in credentials present
-///   → [`google::GoogleCalendarSync`] + [`GoogleDriveBackup`] sharing one
-///   client (same account, same token file).
-/// - Anything else (missing key, `"none"`, unknown provider, absent creds)
-///   → [`noop::NoopCalendarSync`] + [`NoopBackupTarget`] with a one-line info
-///   log explaining why.
+/// The `from_keyring_fn` parameter is injected so callers can test
+/// resolution without touching the OS keyring.
+pub(crate) fn resolve_client_creds(
+    from_keyring_fn: impl FnOnce() -> Result<Option<google::GoogleCredentials>, AppError>,
+) -> Option<google::GoogleCredentials> {
+    match google::GoogleCredentials::env_or_keyring(from_keyring_fn) {
+        Ok(creds) => creds,
+        Err(e) => {
+            log::warn!("calendar: keyring read for client credentials failed: {e}");
+            None
+        }
+    }
+}
+
+fn google_arm_from_sync(
+    sync_result: Result<google::GoogleCalendarSync, AppError>,
+) -> (Arc<dyn CalendarSync>, Arc<dyn BackupTarget>) {
+    match sync_result {
+        Ok(s) => {
+            log::info!("calendar: using Google Calendar sync provider");
+            let sync = Arc::new(s);
+            let backup = Arc::new(GoogleDriveBackup::new(sync.clone()));
+            (sync, backup)
+        }
+        Err(e) => {
+            log::error!(
+                "calendar: cannot initialise Google Calendar provider ({e}) — falling back to noop"
+            );
+            noop_providers()
+        }
+    }
+}
+
+/// When using Google provider and credentials, providers share one client (same account, same token file).
 #[must_use]
 pub fn providers_from_config(
     sync_provider: Option<&str>,
@@ -40,20 +69,11 @@ pub fn providers_from_config(
     token_path: &Path,
 ) -> (Arc<dyn CalendarSync>, Arc<dyn BackupTarget>) {
     match (sync_provider, creds) {
-        (Some("google"), Some(c)) => match google::GoogleCalendarSync::new(c, token_path) {
-            Ok(s) => {
-                log::info!("calendar: using Google Calendar sync provider");
-                let sync = Arc::new(s);
-                let backup = Arc::new(GoogleDriveBackup::new(sync.clone()));
-                (sync, backup)
-            }
-            Err(e) => {
-                log::error!("calendar: cannot initialise Google Calendar provider ({e}) — falling back to noop");
-                noop_providers()
-            }
-        },
-        (Some("google"), None) => {
-            log::info!("calendar: sync_provider is 'google' but no compiled Google credentials — using noop");
+        (Some(SYNC_PROVIDER_GOOGLE), Some(c)) => {
+            google_arm_from_sync(google::GoogleCalendarSync::new(c, token_path))
+        }
+        (Some(SYNC_PROVIDER_GOOGLE), None) => {
+            log::info!("calendar: sync_provider is 'google' but no Google credentials available — using noop");
             noop_providers()
         }
         (Some(other), _) => {
@@ -75,7 +95,7 @@ pub(crate) fn providers_with_mock_keyring(
     keyring: google_token::KeyringStore,
 ) -> (Arc<dyn CalendarSync>, Arc<dyn BackupTarget>) {
     match (sync_provider, creds) {
-        (Some("google"), Some(c)) => {
+        (Some(SYNC_PROVIDER_GOOGLE), Some(c)) => {
             let s = google::GoogleCalendarSync::new_with_mock_keyring(c, keyring);
             let sync = Arc::new(s);
             let backup = Arc::new(GoogleDriveBackup::new(sync.clone()));
@@ -93,9 +113,11 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        google::GoogleCredentials, google_token, providers_from_config, providers_with_mock_keyring,
+        google::GoogleCredentials, google_arm_from_sync, google_token, providers_from_config,
+        providers_with_mock_keyring, resolve_client_creds, SYNC_PROVIDER_GOOGLE,
     };
     use crate::calendar::google_http::test_support::mock_keyring;
+    use crate::error::AppError;
     use crate::test_support::test_now;
     use crate::traits::calendar_sync::CalendarSync;
 
@@ -112,8 +134,8 @@ mod tests {
             .is_ok()
     }
 
-    #[test_case(Some("google"), true, true ; "google_with_creds_uses_google")]
-    #[test_case(Some("google"), false, false ; "google_no_creds_uses_noop")]
+    #[test_case(Some(SYNC_PROVIDER_GOOGLE), true, true ; "google_with_creds_uses_google")]
+    #[test_case(Some(SYNC_PROVIDER_GOOGLE), false, false ; "google_no_creds_uses_noop")]
     #[test_case(Some("none"), true, false ; "none_provider_uses_noop")]
     #[test_case(None, true, false ; "missing_provider_uses_noop")]
     #[test_case(Some("outlook"), true, false ; "unknown_provider_uses_noop")]
@@ -138,18 +160,46 @@ mod tests {
     }
 
     #[test]
+    fn resolve_client_creds_returns_none_on_keyring_error() {
+        let result =
+            resolve_client_creds(|| Err(AppError::CalendarSync("keyring unavailable".into())));
+        assert!(result.is_none(), "keyring error must yield None");
+    }
+
+    #[test]
+    fn resolve_client_creds_returns_keyring_creds_when_present() {
+        let result = resolve_client_creds(|| {
+            Ok(Some(GoogleCredentials {
+                client_id: "kring-id".to_owned(),
+                client_secret: "kring-sec".to_owned(),
+            }))
+        });
+        assert_eq!(result.map(|c| c.client_id).as_deref(), Some("kring-id"));
+    }
+
+    #[test]
     fn providers_from_config_google_arm_selects_google() {
-        // Exercises the production new() path for coverage.
         // Reaches the real Secret Service D-Bus IPC, but safely: the username is
         // derived from a unique tempdir basename, Entry::new does not connect
         // (only get_secret does), and search_items finds nothing so no unlock
         // prompt fires.
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("google_auth.json");
-        let (calendar, _) = providers_from_config(Some("google"), Some(dummy_creds()), &path);
+        let (calendar, _) =
+            providers_from_config(Some(SYNC_PROVIDER_GOOGLE), Some(dummy_creds()), &path);
         assert!(
             is_google(&calendar),
             "providers_from_config with google creds must select Google provider"
+        );
+    }
+
+    #[test]
+    fn google_arm_from_sync_error_falls_back_to_noop() {
+        let (calendar, _) =
+            google_arm_from_sync(Err(AppError::CalendarSync("injected sync failure".into())));
+        assert!(
+            !is_google(&calendar),
+            "a sync construction failure must fall back to the noop provider"
         );
     }
 }
