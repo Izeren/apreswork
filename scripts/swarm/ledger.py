@@ -405,6 +405,42 @@ def show(root: Path, fid: str) -> tuple[str, dict] | None:
             return f"ledger ({rel})", {"id": fid, **hit}
     return None
 
+def drop_stale(root: Path, files: list[str] | None) -> str:
+    """Remove upheld findings from the ledger whose blob no longer matches the file."""
+    ledger = load_ledger(root)
+    targets = [relative(root, f) for f in files] if files else [
+        rel for rel in ledger if ledger[rel].get("findings")
+    ]
+    present = [t for t in targets if (root / t).is_file()]
+    if not present:
+        return "no stale findings to remove\n"
+    current_blobs = dict(zip(present, git(root, "hash-object", "--", *present).split()))
+    to_drop: dict[str, list[str]] = {}
+    for rel in targets:
+        current = current_blobs.get(rel)
+        if current is None:
+            continue
+        stale = [fid for fid, f in ledger.get(rel, {}).get("findings", {}).items()
+                 if f.get("blob") != current]
+        if stale:
+            to_drop[rel] = stale
+    if not to_drop:
+        return "no stale findings to remove\n"
+
+    def apply(led: dict) -> None:
+        for rel, fids in to_drop.items():
+            findings = led.get(rel, {}).get("findings", {})
+            for fid in fids:
+                findings.pop(fid, None)
+
+    update_ledger(root, apply)
+    lines = [f"dropped {sum(len(v) for v in to_drop.values())} stale finding(s):"]
+    for rel, fids in sorted(to_drop.items()):
+        for fid in fids:
+            lines.append(f"  {rel}: {fid[:8]}")
+    return "\n".join(lines) + "\n"
+
+
 def plan(root: Path, every: bool) -> str:
     config = load_config(root)
     scoped = tracked_in_scope(root, config["scope"])
@@ -497,6 +533,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", dest="every")
     sub.add_parser("batches", help="verifier batches, by tier")
     sub.add_parser("gate", help="pre-commit check")
+    p = sub.add_parser("drop-stale",
+                       help="remove upheld findings whose blob no longer matches the file")
+    p.add_argument("files", nargs="*",
+                   help="optional list of files; default: all files with upheld findings")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
@@ -533,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
             print(plan(root, args.every), end="")
         elif args.cmd == "batches":
             print(batches(root), end="")
+        elif args.cmd == "drop-stale":
+            print(drop_stale(root, args.files or None), end="")
         elif args.cmd == "gate":
             code, out = gate(root)
             print(out, end="")

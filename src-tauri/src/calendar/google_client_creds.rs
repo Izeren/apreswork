@@ -29,9 +29,6 @@ struct ClientCredBlob {
 /// The probe is best-effort: if Google is unreachable the credentials reach
 /// the keyring and fail naturally on first use.
 ///
-/// Google answers with `"invalid_grant"` or `"redirect_uri_mismatch"`, never
-/// `"invalid_client"`, so the dummy redirect URI does not affect the outcome.
-///
 /// # Errors
 ///
 /// Returns [`AppError::Validation`] only when Google returns
