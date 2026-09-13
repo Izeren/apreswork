@@ -8,13 +8,13 @@
 # Usage:
 #   bash scripts/coverage.sh              # print summary to stdout
 #   bash scripts/coverage.sh -o result    # write final status line to result file
+#   bash scripts/coverage.sh -b <ref>     # diff base of the changed-code report (default: HEAD)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COVERAGE_BASELINE_FILE="${COVERAGE_BASELINE_FILE:-$REPO_ROOT/scripts/coverage-baseline.env}"
 CHANGED_CODE_MIN="${CHANGED_CODE_MIN:-90}"
-COVERAGE_DIFF_BASE="${COVERAGE_DIFF_BASE:-HEAD}"
 # Colon-separated list of src-tauri/src path suffixes to exclude from the
 # changed-code coverage gate.  Use for Tauri glue files whose lines execute
 # only inside the Tauri runtime and cannot be reached by unit tests.
@@ -28,12 +28,16 @@ COVERAGE_CHANGED_IGNORE="${COVERAGE_CHANGED_IGNORE:-src-tauri/src/lib.rs}"
 COVERAGE_IGNORE_REGEX="${COVERAGE_IGNORE_REGEX:-src-tauri/src/(commands/|lib\.rs|main\.rs)}"
 
 output_file=""
-while getopts "o:" opt; do
+diff_base=""
+while getopts "o:b:" opt; do
   case $opt in
     o) output_file="$OPTARG" ;;
-    *) echo "Usage: $0 [-o output_file]" >&2; exit 1 ;;
+    b) diff_base="$OPTARG" ;;
+    *) echo "Usage: $0 [-o output_file] [-b diff_base]" >&2; exit 1 ;;
   esac
 done
+# The changed-code report diffs against this ref. An empty value means HEAD.
+diff_base="${diff_base:-HEAD}"
 
 report() {
   echo "$1"
@@ -367,7 +371,7 @@ if [[ -f "$branch_lcov_path" ]]; then
   report "Branch gap report: $branch_gap_report_path"
 
   read -r changed_line_hit changed_line_total changed_branch_hit changed_branch_total < <(
-    generate_changed_code_report "$COVERAGE_DIFF_BASE" "$branch_lcov_path" "$changed_code_report_path"
+    generate_changed_code_report "$diff_base" "$branch_lcov_path" "$changed_code_report_path"
   )
   report "Changed code coverage report: $changed_code_report_path"
 

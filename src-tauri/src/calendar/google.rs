@@ -26,12 +26,12 @@ use oauth2::{
     PkceCodeChallenge, RedirectUrl, RefreshToken, Scope, TokenResponse as _, TokenUrl,
 };
 
-/// `BasicClient` configured with both auth and token endpoints.
 type ConfiguredClient =
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 use url::Url;
 
 use crate::calendar::google_http;
+pub use crate::calendar::google_token::ClientCredentialStore;
 use crate::calendar::google_token::{KeyringStore, PersistedCredential, StoredToken};
 use crate::error::AppError;
 use crate::traits::calendar_sync::{
@@ -39,14 +39,25 @@ use crate::traits::calendar_sync::{
     SyncOpResult, UserEventPayload,
 };
 
+const AUTH_TIMEOUT_SECS: u64 = 300;
+const TOKEN_REFRESH_MARGIN_SECS: i64 = 60;
+const DEFAULT_TOKEN_TTL_SECS: i64 = 3600;
+const HTTP_REQUEST_BUFFER_SIZE: usize = 4096;
+
 /// Client credentials compiled into the binary at build time.
 ///
 /// For Google "Desktop" app type the `client_secret` is not truly secret —
 /// it is embedded in every distributed copy of the binary, which is
 /// industry-standard for desktop OAuth apps (DESIGN.md §4.3).
+///
+/// # Security
+///
+/// No `Debug` derive — avoids accidental exposure via `{:?}` in log macros.
+/// Keyring serialization goes through a private blob type (see
+/// `calendar::google_client_creds`), so this struct carries no `Serialize`
+/// or `Deserialize` derive.
 #[derive(Clone)]
 pub struct GoogleCredentials {
-    /// `OAuth2` client ID.
     pub client_id: String,
     /// `OAuth2` client secret (not confidential for desktop apps).
     pub client_secret: String,
@@ -73,6 +84,47 @@ impl GoogleCredentials {
                 client_secret: secret.to_owned(),
             })
         }
+    }
+
+    /// Resolve credentials: keyring takes precedence; compiled env vars are
+    /// the fallback.
+    ///
+    /// The `from_keyring_fn` parameter is injected so callers can test the
+    /// policy without touching the OS keyring.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error returned by `from_keyring_fn`.
+    pub(crate) fn resolve(
+        compiled: Option<Self>,
+        from_keyring_fn: impl FnOnce() -> Result<Option<Self>, AppError>,
+    ) -> Result<Option<Self>, AppError> {
+        match from_keyring_fn()? {
+            Some(creds) => Ok(Some(creds)),
+            None => Ok(compiled),
+        }
+    }
+
+    /// Read credentials from the OS keyring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::CalendarSync`] when the keyring is unavailable or
+    /// the stored blob cannot be deserialized.
+    pub fn from_keyring() -> Result<Option<Self>, AppError> {
+        ClientCredentialStore::new()?.load()
+    }
+
+    /// Convenience wrapper for cold-start credential resolution — see
+    /// [`Self::resolve`] for policy and testing notes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::CalendarSync`] when `from_keyring_fn` fails.
+    pub fn env_or_keyring(
+        from_keyring_fn: impl FnOnce() -> Result<Option<Self>, AppError>,
+    ) -> Result<Option<Self>, AppError> {
+        Self::resolve(Self::compiled(), from_keyring_fn)
     }
 }
 
@@ -120,7 +172,6 @@ struct CachedToken {
     expires_at: DateTime<Utc>,
 }
 
-/// JSON shape returned by the Google token refresh endpoint.
 #[derive(serde::Deserialize)]
 struct RefreshResponse {
     access_token: String,
@@ -160,7 +211,7 @@ impl GoogleCalendarSync {
             creds,
             keyring,
             GoogleEndpoints::default(),
-            Duration::from_secs(300),
+            Duration::from_secs(AUTH_TIMEOUT_SECS),
         ))
     }
 
@@ -196,7 +247,6 @@ impl GoogleCalendarSync {
         }
     }
 
-    /// Construct with injected keyring and endpoints (test only, no migration).
     #[cfg(test)]
     pub(crate) fn with_mock_keyring(
         creds: GoogleCredentials,
@@ -207,21 +257,17 @@ impl GoogleCalendarSync {
         Self::build(creds, keyring, endpoints, auth_timeout)
     }
 
-    /// Construct with production defaults and an injected keyring (test only).
     #[cfg(test)]
     pub(crate) fn new_with_mock_keyring(creds: GoogleCredentials, keyring: KeyringStore) -> Self {
         Self::build(
             creds,
             keyring,
             GoogleEndpoints::default(),
-            Duration::from_secs(300),
+            Duration::from_secs(AUTH_TIMEOUT_SECS),
         )
     }
 
-    /// Pre-populate the in-memory access-token cache (test only).
-    ///
-    /// Used by test helpers that need a "connected" provider without going
-    /// through an HTTP refresh grant.
+    /// Used by test helpers that need a "connected" provider without going through an HTTP refresh grant.
     #[cfg(test)]
     pub(crate) fn seed_access_token(&self, access_token: String, expires_at: DateTime<Utc>) {
         let mut cache = self.cached_token.lock().expect("cache lock in seed");
@@ -236,7 +282,7 @@ impl GoogleCalendarSync {
         &self.keyring
     }
 
-    /// Return the cached access token without any expiry check (test-only).
+    /// Return the cached access token without any expiry check.
     #[cfg(test)]
     pub(crate) fn cached_access_token(&self) -> Option<String> {
         self.cached_token
@@ -268,7 +314,7 @@ impl GoogleCalendarSync {
                 .lock()
                 .expect("cache lock in access_token");
             if let Some(ref ct) = *cache {
-                let margin = chrono::Duration::seconds(60);
+                let margin = chrono::Duration::seconds(TOKEN_REFRESH_MARGIN_SECS);
                 if ct.expires_at > now + margin {
                     return Ok(ct.access_token.clone());
                 }
@@ -283,11 +329,8 @@ impl GoogleCalendarSync {
         self.refresh(cred, now)
     }
 
-    /// Perform a token refresh grant against `endpoints.token_url`.
-    ///
     /// Preserves the old refresh token when the response omits it (Google's
-    /// behaviour on some re-consent scenarios). Persists the new credential to
-    /// the keyring and updates the in-memory cache.
+    /// behaviour on some re-consent scenarios).
     fn refresh(&self, cred: PersistedCredential, now: DateTime<Utc>) -> Result<String, AppError> {
         let started = std::time::Instant::now();
         let refresh_token = cred.refresh_token.ok_or_else(|| {
@@ -327,7 +370,8 @@ impl GoogleCalendarSync {
             AppError::CalendarSync(format!("token refresh response parse error: {e}"))
         })?;
 
-        let expires_at = now + chrono::Duration::seconds(resp.expires_in.unwrap_or(3600));
+        let expires_at =
+            now + chrono::Duration::seconds(resp.expires_in.unwrap_or(DEFAULT_TOKEN_TTL_SECS));
         let new_refresh_token = resp.refresh_token.or(Some(refresh_token));
 
         self.keyring.save(&PersistedCredential {
@@ -350,12 +394,10 @@ impl GoogleCalendarSync {
         Ok(resp.access_token)
     }
 
-    /// Borrow the underlying HTTP client (used by the REST client module).
     pub(crate) fn http(&self) -> &reqwest::blocking::Client {
         &self.http
     }
 
-    /// Borrow the configured endpoints (used by the REST client module).
     pub(crate) fn endpoints(&self) -> &GoogleEndpoints {
         &self.endpoints
     }
@@ -444,7 +486,7 @@ impl CalendarSync for GoogleCalendarSync {
             gen
         };
 
-        // Clone everything the worker thread needs (no borrows across threads).
+        // Threading constraint: no borrows across threads.
         let worker_creds = self.creds.clone();
         let worker_endpoints = self.endpoints.clone();
         let worker_http = self.http.clone();
@@ -617,7 +659,6 @@ fn default_backoff() -> google_http::BackoffPolicy {
     google_http::BackoffPolicy::default()
 }
 
-/// Build the oauth2 `BasicClient` configured for Google.
 fn build_oauth_client(
     creds: &GoogleCredentials,
     endpoints: &GoogleEndpoints,
@@ -637,9 +678,6 @@ fn build_oauth_client(
         .set_redirect_uri(redirect))
 }
 
-/// Clones the listener, spawns a thread that blocks on `accept`, and waits up
-/// to `timeout` for a connection. Returns `None` on clone failure, accept error,
-/// or timeout; logs the reason.
 fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpStream> {
     let listener_clone = match listener.try_clone() {
         Ok(l) => l,
@@ -665,8 +703,6 @@ fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpS
     }
 }
 
-/// Worker thread: waits for the browser redirect, exchanges the code.
-///
 /// On success, writes the token file (unless the flow was superseded by a
 /// newer `begin_auth`). Always clears `current` from the pending slot when done.
 #[allow(clippy::too_many_arguments)]
@@ -718,23 +754,23 @@ fn run_auth_worker(
     );
 }
 
-/// Self-contained HTML page shown in the browser tab after the OAuth redirect.
-///
 /// Must be served with an explicit UTF-8 charset (header + meta) — without it
 /// browsers fall back to Latin-1 and mangle the non-ASCII text. The phrase
 /// "close this tab" is asserted by the loopback tests.
 fn redirect_page(success: bool) -> String {
+    const SUCCESS_COLOR: &str = "#10b981";
+    const ERROR_COLOR: &str = "#ef4444";
     let (mark, mark_color, heading, detail) = if success {
         (
             "✓",
-            "#10b981",
+            SUCCESS_COLOR,
             "Connected to Google Calendar",
             "Authorization received — you can close this tab and return to Après Work.",
         )
     } else {
         (
             "✕",
-            "#ef4444",
+            ERROR_COLOR,
             "Sign-in didn't complete",
             "Authorization failed — you can close this tab and retry from Après Work's settings.",
         )
@@ -758,8 +794,6 @@ fn redirect_page(success: bool) -> String {
     )
 }
 
-/// Read the HTTP request from `stream`, parse query params, respond, exchange.
-///
 /// Takes `pkce_verifier` by value (consumed by the exchange if it reaches
 /// that point — `set_pkce_verifier` requires ownership).
 ///
@@ -778,7 +812,7 @@ fn parse_and_exchange(
     now: DateTime<Utc>,
 ) -> Result<Option<StoredToken>, ()> {
     // Read at most 4 KiB (the request line + headers — no body on a GET).
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; HTTP_REQUEST_BUFFER_SIZE];
     let n = stream.read(&mut buf).map_err(|e| {
         log::warn!("auth worker: read error: {}", e.kind());
     })?;
@@ -839,14 +873,14 @@ fn parse_and_exchange(
         .request(http)
         .map_err(|e| {
             log::warn!("auth worker: token exchange failed");
-            let _ = e; // never log — could include response body with token
+            let _ = e; // see error param handling for security rationale
         })?;
 
     let expires_at = now
         + chrono::Duration::from_std(
             token_response
                 .expires_in()
-                .unwrap_or(Duration::from_secs(3600)),
+                .unwrap_or(Duration::from_secs(DEFAULT_TOKEN_TTL_SECS as u64)),
         )
         .unwrap_or(chrono::Duration::hours(1));
 
@@ -871,7 +905,6 @@ fn finish_flow(
     cached_token: &Arc<Mutex<Option<CachedToken>>>,
     stored_token: Option<StoredToken>,
 ) {
-    // The `pending` lock is held for the entire save + cache update below.
     // This is intentional: holding it across the keyring IPC prevents a
     // disconnect() that fires between save and cache-write from leaving a
     // dangling credential in the keyring while clearing only the in-memory

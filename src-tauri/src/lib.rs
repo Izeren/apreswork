@@ -27,10 +27,9 @@ pub mod traits;
 const GRACEFUL_EXIT_BACKUP_TIMEOUT_SECS: u64 = 5;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// The store, timers, and REST server start in
-/// `profiles::activate::activate_profile` — at startup for the last-used
-/// profile; the frontend gate is only a fallback (activation failure or an
-/// empty registry).
+/// The store is created in `activate_profile` at startup for the last-used
+/// profile. The frontend gate is only a fallback (activation failure or empty
+/// registry).
 ///
 /// # Panics
 ///
@@ -104,6 +103,7 @@ pub fn run() {
             commands::backup_commands::backup_now,
             commands::backup_commands::export_backup_to_file,
             commands::backup_commands::import_backup_from_file,
+            commands::credentials_commands::save_google_client_credentials,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -154,23 +154,27 @@ pub fn run() {
                 );
             }
             let api_config = api::http_server::ServerConfig::from_env();
+            let startup_creds =
+                calendar::resolve_client_creds(calendar::google::GoogleCredentials::from_keyring);
+            let server_creds = startup_creds.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) =
-                    api::http_server::start_server(active, profiles_state, api_config).await
+                    api::http_server::start_server(active, profiles_state, api_config, server_creds)
+                        .await
                 {
                     log::error!("Failed to start REST API server: {e}");
                 }
             });
 
             if let Some(entry) = fast_path {
-                // Auto-open the last-used profile — no picker, straight into
-                // the data. Best-effort: on failure the slot stays empty and
+                // Best-effort: on failure the slot stays empty and
                 // the frontend falls back to the profile gate (retry there).
                 if let Err(e) = profiles::activate::activate_profile(
                     app.handle(),
                     &data_dir,
                     &entry,
                     chrono::Utc::now(),
+                    startup_creds,
                 ) {
                     log::error!(
                         "profiles: startup activation of '{}' failed: {e}",

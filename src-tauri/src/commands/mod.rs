@@ -6,6 +6,7 @@ pub mod backup_commands;
 pub mod chunk_commands;
 pub mod comment_commands;
 pub mod config_commands;
+pub mod credentials_commands;
 pub mod profile_commands;
 pub mod recurring_commands;
 pub mod schedule_commands;

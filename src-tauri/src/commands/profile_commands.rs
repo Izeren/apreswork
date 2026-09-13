@@ -21,6 +21,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::Manager as _;
 
+use crate::calendar;
+use crate::calendar::google::GoogleCredentials;
 use crate::error::AppError;
 use crate::profiles::registry::{ProfileEntry, ProfilesRegistry};
 use crate::profiles::{activate, service, ActiveProfile, ProfilesState};
@@ -53,10 +55,7 @@ pub struct ProfileStatusResponse {
     pub last_used: Option<String>,
 }
 
-/// Lock the registry, resolve `id` to its entry (or `NotFound`), then run
-/// `after` with the locked registry and profiles state while the lock is
-/// still held. Shared preamble for `unlock_profile` and `switch_profile`:
-/// both start by resolving the target profile under the registry lock.
+/// Shared preamble for `unlock_profile` and `switch_profile`: both start by resolving the target profile under the registry lock.
 fn with_profile_entry<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     id: &str,
@@ -104,6 +103,42 @@ pub fn profile_status<R: tauri::Runtime>(
     })
 }
 
+fn default_creds() -> Option<GoogleCredentials> {
+    calendar::resolve_client_creds(GoogleCredentials::from_keyring)
+}
+
+async fn spawn_blocking_profile<T: Send + 'static>(
+    op: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+    task_name: &'static str,
+) -> Result<T, AppError> {
+    tauri::async_runtime::spawn_blocking(op)
+        .await
+        .map_err(|e| AppError::Internal(format!("{task_name} task failed: {e}")))?
+}
+
+/// Tests call this with `resolve_creds = || None` to bypass the OS keyring.
+async fn unlock_profile_impl<R, F>(
+    app: tauri::AppHandle<R>,
+    id: String,
+    resolve_creds: F,
+) -> Result<ActiveProfile, AppError>
+where
+    R: tauri::Runtime,
+    F: FnOnce() -> Option<GoogleCredentials> + Send + 'static,
+{
+    let (entry, data_dir) = with_profile_entry(&app, &id, |registry, profiles_state, entry| {
+        service::mark_last_used(registry, &profiles_state.data_dir, &id)?;
+        Ok((entry, profiles_state.data_dir.clone()))
+    })?;
+    // Provider's blocking HTTP client panics when created or dropped on async runtime.
+    // Same rule as provider calls in auth_commands. Keyring I/O is synchronous D-Bus.
+    spawn_blocking_profile(
+        move || activate::activate_profile(&app, &data_dir, &entry, Utc::now(), resolve_creds()),
+        "profile activation",
+    )
+    .await
+}
+
 /// Activate the selected profile: open its database and install it into the
 /// process-scoped `ActiveState` slot (the REST server and background timers
 /// pick it up on their own).
@@ -118,21 +153,7 @@ pub async fn unlock_profile<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     id: String,
 ) -> Result<ActiveProfile, AppError> {
-    // Scope the registry lock: the guard must drop before any `.await`.
-    let (entry, data_dir) = with_profile_entry(&app, &id, |registry, profiles_state, entry| {
-        service::mark_last_used(registry, &profiles_state.data_dir, &id)?;
-        Ok((entry, profiles_state.data_dir.clone()))
-    })?;
-    // Activation constructs the Google provider's blocking HTTP client;
-    // creating (or dropping) one on an async runtime worker panics with
-    // "Cannot drop a runtime in a context where blocking is not allowed".
-    // Run the whole activation on a blocking thread — same rule as the
-    // provider calls in auth_commands.
-    tauri::async_runtime::spawn_blocking(move || {
-        activate::activate_profile(&app, &data_dir, &entry, Utc::now())
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("profile activation task failed: {e}")))?
+    unlock_profile_impl(app, id, default_creds).await
 }
 
 /// Create a new profile (validated name, empty data dir).
@@ -171,27 +192,12 @@ pub fn rename_profile<R: tauri::Runtime>(
     Ok(ProfileInfo::from(&entry))
 }
 
-/// Switch the running app to another profile in-process: flush the outgoing
-/// profile's backup, swap the `ActiveState` slot, and activate the target.
-/// No restart — the frontend remounts its views on the returned profile.
-///
-/// Selecting the already-active profile is a no-op that returns the current
-/// profile (the switcher dropdown re-selects without confirmation).
-///
-/// # Errors
-///
-/// Returns [`AppError::NotFound`] for an unknown id, and activation errors
-/// from `profiles::activate` (on failure the slot is left empty and the
-/// frontend falls back to the profile gate).
-#[tauri::command]
-pub async fn switch_profile<R: tauri::Runtime>(
+async fn switch_profile_impl<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     id: String,
+    creds_fn: impl FnOnce() -> Option<GoogleCredentials> + Send + 'static,
 ) -> Result<ActiveProfile, AppError> {
-    // Scope the registry lock: the guard must drop before any `.await`.
     let outcome = with_profile_entry(&app, &id, |registry, profiles_state, entry| {
-        // Re-selecting the active profile must not tear down and rebuild the
-        // state it is already running on.
         let current = app.try_state::<ActiveState>().and_then(|s| s.get_opt());
         if current.is_some_and(|s| s.profile.id == entry.id) {
             return Ok(ControlFlow::Break(ActiveProfile {
@@ -209,18 +215,30 @@ pub async fn switch_profile<R: tauri::Runtime>(
         ControlFlow::Break(profile) => return Ok(profile),
         ControlFlow::Continue(pair) => pair,
     };
-    // Blocking thread for the same reason as `unlock_profile`, plus the
-    // outgoing profile's bounded backup flush.
-    tauri::async_runtime::spawn_blocking(move || {
-        activate::switch_active_profile(&app, &data_dir, &entry, Utc::now())
-    })
+    spawn_blocking_profile(
+        move || activate::switch_active_profile(&app, &data_dir, &entry, Utc::now(), creds_fn()),
+        "profile switch",
+    )
     .await
-    .map_err(|e| AppError::Internal(format!("profile switch task failed: {e}")))?
 }
 
-/// Delete a profile and its data directory. Destructive — the UI confirms
-/// first. The ACTIVE profile cannot be deleted (switch first) — which also
-/// guarantees at least one profile always remains.
+/// Switch the running app to another profile in-process.
+///
+/// # Errors
+///
+/// Returns [`AppError::NotFound`] for an unknown id, and activation errors
+/// from `profiles::activate` (on failure the slot is left empty and the
+/// frontend falls back to the profile gate).
+#[tauri::command]
+pub async fn switch_profile<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    id: String,
+) -> Result<ActiveProfile, AppError> {
+    // see unlock_profile_impl for spawn_blocking rationale
+    switch_profile_impl(app, id, default_creds).await
+}
+
+/// Destructive — the UI confirms first.
 ///
 /// # Errors
 ///
@@ -252,7 +270,7 @@ mod tests {
 
     use super::{
         create_profile, delete_profile, profile_status, rename_profile, switch_profile,
-        unlock_profile,
+        switch_profile_impl, unlock_profile, unlock_profile_impl,
     };
     use crate::error::AppError;
     use crate::profiles::activate::build_app_state;
@@ -289,6 +307,7 @@ mod tests {
                 name: format!("Profile {id}"),
             },
             None,
+            None,
         )
         .expect("build state");
         app.manage(ActiveState::from(Arc::new(state)));
@@ -320,7 +339,7 @@ mod tests {
     async fn unlock_profile_rejects_when_already_active() {
         let (dir, app) = gated_app(vec![entry("p1", "Alice")]);
         activate(&app, &dir, "p1");
-        let err = unlock_profile(app.handle().clone(), "p1".to_owned())
+        let err = unlock_profile_impl(app.handle().clone(), "p1".to_owned(), || None)
             .await
             .expect_err("second unlock must fail");
         assert!(matches!(err, AppError::Validation(_)), "got: {err}");
@@ -439,7 +458,7 @@ mod tests {
         let (dir, app) = gated_app(vec![entry("p1", "Alice"), entry("p2", "Bob")]);
         activate(&app, &dir, "p1");
 
-        let profile = switch_profile(app.handle().clone(), "p2".to_owned())
+        let profile = switch_profile_impl(app.handle().clone(), "p2".to_owned(), || None)
             .await
             .expect("switch");
 

@@ -43,7 +43,7 @@ Task tracking lives in the app itself (`bash scripts/api.sh`), not in a markdown
 - `npm run format:check` — Prettier check
 - `npm run format` — Prettier auto-fix
 - `npm run dup` — jscpd copy-paste detector over `src/` + `src-tauri/src/` (standing gate, not a one-off: threshold in `.jscpd.json` fails the run when duplication grows past the recorded baseline; read the per-clone listing, not just the exit code)
-- `bash scripts/coverage.sh` — Rust coverage verification. Enforces the hard floor, emits branch-gap and changed-code reports, and should be read rather than treated as a single pass/fail number. Use `-o FILE` to write results to a file.
+- `bash scripts/coverage.sh` — Rust coverage verification. Enforces the hard floor, emits branch-gap and changed-code reports, and should be read rather than treated as a single pass/fail number. Use `-o FILE` to write results to a file. Use `-b REF` to set the diff base of the changed-code report (default: `HEAD`).
 - `python3 scripts/swarm/ledger.py` — the swarm ledger: one script, one subcommand per job (`--help` lists them). **Every in-scope file must be reviewed at exactly the content being committed**, and every finding on it settled — pre-existing ones included. A finding is cleared by fixing it, or, when it is a false positive, by a rejection that a verifier upholds. Ledger: `.quality/ledger.json` — `{path: {blob, findings}}`, machine-written by `ledger.py rule` and `ledger.py record`, never hand-edit, and staged with the commit that earned it. `gate` runs from the pre-commit hook; never invoke it by hand.
 - `python3 scripts/swarm/ledger.py plan --all` — every in-scope file still owing a review.
 
@@ -131,7 +131,7 @@ Run `bash scripts/add-license-headers.sh` to auto-add missing headers.
 - TDD: write tests before implementation
 - Coverage expectation: get as close to 100% as reasonably practical. `90%` is a hard floor for weird or low-value cases, not the target.
 - Uncovered lines or branches are acceptable only when the testing cost is disproportionate or the code is not worth deeper exercise. Those cases should be rare and should be explicitly justified.
-- Run `bash scripts/coverage.sh -o /tmp/coverage-result.txt` after implementing tasks with tests, then read the output file and the generated coverage artifacts.
+- Run `bash scripts/coverage.sh -o .tmp/coverage-result.txt` after implementing tasks with tests, then read the output file and the generated coverage artifacts.
 - Review the generated `coverage/branch-gaps.txt` and `coverage/changed-code-coverage.txt` reports. Do not stop at the headline percentage.
 - Exceptions: pure data structs, serde derives, and Tauri command thin wrappers
 - **No module mocking.** `vi.mock` / `vi.doMock` are lint-errors (`no-restricted-syntax`): they replace a whole module for the file, so the test stops exercising the real one and keeps passing when it changes. Inject the collaborator instead — an api object as a prop, or the dependency as a parameter. Injected doubles built with `vi.fn()` are fine and are the point of the DI seams; `vi.mocked()` is a type cast, not a mock. If a module singleton with import-time side effects leaves no seam, make it injectable rather than stubbing it. The two `eslint-disable`s for `router.svelte` are the only exceptions and are on their way out.
@@ -144,7 +144,7 @@ Run each command as a **separate** Bash call. **DO NOT** chain with `&&`, pipe w
 1. `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`
 2. `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
 3. `cargo test --manifest-path src-tauri/Cargo.toml`
-4. `bash scripts/coverage.sh -o /tmp/coverage-result.txt` (if task includes tests), then read `/tmp/coverage-result.txt`, `coverage/branch-gaps.txt`, and `coverage/changed-code-coverage.txt`
+4. `bash scripts/coverage.sh -o .tmp/coverage-result.txt` (if task includes tests), then read `.tmp/coverage-result.txt`, `coverage/branch-gaps.txt`, and `coverage/changed-code-coverage.txt`
 5. `npm run format`, `npm run lint`, `npm run check` (if frontend changed) — each as a separate Bash call
 6. `npm run dup` — duplication gate; on failure, deduplicate the new code (or, with owner sign-off, adjust the `.jscpd.json` threshold)
 7. `python3 scripts/check_invoke_contract.py` (if `api.ts` or any Tauri command changed)

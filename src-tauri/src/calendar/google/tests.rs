@@ -10,21 +10,35 @@ use chrono::{DateTime, TimeZone as _, Utc};
 use test_case::test_case;
 use url::Url;
 
-use super::{GoogleCalendarSync, GoogleCredentials, GoogleEndpoints};
+use std::sync::Arc;
+
+use super::{ClientCredentialStore, GoogleCalendarSync, GoogleCredentials, GoogleEndpoints};
 use crate::calendar::google_http::test_support::mock_keyring;
-use crate::calendar::google_token::test_support::fail_entry;
+use crate::calendar::google_token::test_support::{fail_entry, make_mock_entry};
 use crate::calendar::google_token::{KeyringStore, PersistedCredential};
+use crate::error::AppError;
 use crate::traits::calendar_sync::{AuthStatus, CalendarSync};
 
 const AUTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
 const AUTH_TIMEOUT_SHORT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const HTTP_RESPONSE_BUFFER: usize = 8192;
+const REDIRECT_RESPONSE_BUFFER: usize = 4096;
+const TEST_TIMEOUT_MEDIUM: Duration = Duration::from_secs(3);
+const MOCK_POLL_DELAY: Duration = Duration::from_millis(200);
+const POLLING_TIMEOUT: Duration = Duration::from_millis(100);
+const TOKEN_EXPIRES_IN_SECS: u64 = 3600;
+const YEAR_FAR_FUTURE: i32 = 2999;
+const HTTP_STATUS_OK: u16 = 200;
+const HTTP_STATUS_BAD_REQUEST: u16 = 400;
+const HTTP_HEADER_SEP_LEN: usize = 4;
+const HTTP_STATUS_OK_LINE: &str = "200 OK";
+const HTTP_STATUS_BAD_REQUEST_LINE: &str = "400 Bad Request";
+const HTTP_STATUS_OK_STR: &str = "200";
+const MOCK_REDIRECT_CODE: &str = "4%2Fcode";
 
 fn test_creds() -> GoogleCredentials {
-    GoogleCredentials {
-        client_id: "test-client-id".to_owned(),
-        client_secret: "test-secret".to_owned(),
-    }
+    creds("test-client-id", "test-secret")
 }
 
 fn test_provider(keyring: KeyringStore, token_url: &str) -> GoogleCalendarSync {
@@ -48,10 +62,9 @@ fn test_provider_with_timeout(
     )
 }
 
-/// Returns a keyring and provider backed by a mock token endpoint that returns `{}`.
 fn test_provider_with_empty_ok_mock() -> (KeyringStore, GoogleCalendarSync) {
     let keyring = mock_keyring();
-    let (token_url, _handle) = mock_token_endpoint("{}", 200);
+    let (token_url, _handle) = mock_token_endpoint("{}", HTTP_STATUS_OK);
     let provider = test_provider(keyring.clone(), &token_url);
     (keyring, provider)
 }
@@ -81,13 +94,11 @@ fn future_expiry() -> DateTime<Utc> {
 }
 
 fn far_future() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2999, 1, 1, 0, 0, 0)
+    Utc.with_ymd_and_hms(YEAR_FAR_FUTURE, 1, 1, 0, 0, 0)
         .single()
         .expect("far future")
 }
 
-/// Build a provider + mock token endpoint that returns the standard refresh response JSON.
-///
 /// The response body has a configurable `access_token` value so each test can assert
 /// a distinct token, while the common fields (`refresh_token`, `expires_in`, `token_type`)
 /// avoid repeated inline JSON literals.
@@ -96,9 +107,9 @@ fn provider_with_refresh_mock(
     access_token: &str,
 ) -> (GoogleCalendarSync, std::thread::JoinHandle<Option<String>>) {
     let body = format!(
-        r#"{{"access_token":"{access_token}","refresh_token":"rt","expires_in":3600,"token_type":"Bearer"}}"#
+        r#"{{"access_token":"{access_token}","refresh_token":"rt","expires_in":{TOKEN_EXPIRES_IN_SECS},"token_type":"Bearer"}}"#
     );
-    let (token_url, mock_handle) = mock_token_endpoint(&body, 200);
+    let (token_url, mock_handle) = mock_token_endpoint(&body, HTTP_STATUS_OK);
     let provider = test_provider(keyring, &token_url);
     (provider, mock_handle)
 }
@@ -124,6 +135,12 @@ fn assert_refresh_error_contains(
     assert_calendar_sync_error(provider, needle);
 }
 
+fn mock_token_body() -> String {
+    format!(
+        r#"{{"access_token":"at-1","refresh_token":"rt-1","expires_in":{TOKEN_EXPIRES_IN_SECS},"token_type":"Bearer"}}"#
+    )
+}
+
 fn mock_token_endpoint(
     body: &str,
     status: u16,
@@ -135,18 +152,20 @@ fn mock_token_endpoint(
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().ok()?;
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; HTTP_RESPONSE_BUFFER];
         let n = stream.read(&mut buf).ok()?;
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
 
-        let request_body = request
-            .find("\r\n\r\n")
-            .map(|i| request[i + 4..].trim_end_matches('\0').to_owned());
+        let request_body = request.find("\r\n\r\n").map(|i| {
+            request[i + HTTP_HEADER_SEP_LEN..]
+                .trim_end_matches('\0')
+                .to_owned()
+        });
 
-        let status_line = if status == 200 {
-            "200 OK"
+        let status_line = if status == HTTP_STATUS_OK {
+            HTTP_STATUS_OK_LINE
         } else {
-            "400 Bad Request"
+            HTTP_STATUS_BAD_REQUEST_LINE
         };
         let response = format!(
             "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -187,7 +206,7 @@ fn send_redirect(port: u16, query: &str) -> String {
     stream
         .write_all(request.as_bytes())
         .expect("write redirect");
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; REDIRECT_RESPONSE_BUFFER];
     let n = stream.read(&mut buf).expect("read redirect response");
     String::from_utf8_lossy(&buf[..n]).to_string()
 }
@@ -208,7 +227,7 @@ fn begin_auth_and_extract(provider: &GoogleCalendarSync) -> (String, u16) {
 
 fn run_exchange_assert_not_connected(provider: &GoogleCalendarSync, msg: &str) {
     let (state, port) = begin_auth_and_extract(provider);
-    let redirect_query = format!("state={state}&code=4%2Fcode");
+    let redirect_query = format!("state={state}&code={MOCK_REDIRECT_CODE}");
     send_redirect(port, &redirect_query);
     let final_status = wait_for_status_change(provider, AUTH_TIMEOUT_DEFAULT);
     assert_eq!(final_status, AuthStatus::NotConnected, "{msg}");
@@ -298,17 +317,16 @@ fn begin_auth_returns_url_with_required_params() {
 #[test]
 fn happy_path_connects_and_saves_token() {
     let keyring = mock_keyring();
-    let mock_body =
-        r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"token_type":"Bearer"}"#;
-    let (token_url, mock_handle) = mock_token_endpoint(mock_body, 200);
+    let mock_body = mock_token_body();
+    let (token_url, mock_handle) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
     let provider = test_provider(keyring.clone(), &token_url);
 
     let (state, port) = begin_auth_and_extract(&provider);
 
-    let redirect_query = format!("state={state}&code=4%2Fcode");
+    let redirect_query = format!("state={state}&code={MOCK_REDIRECT_CODE}");
     let response = send_redirect(port, &redirect_query);
     assert!(
-        response.contains("200"),
+        response.contains(HTTP_STATUS_OK_STR),
         "redirect response must be 200: {response}"
     );
     assert!(
@@ -352,7 +370,7 @@ fn happy_path_connects_and_saves_token() {
 #[test_case("state={state}&noop=1" ; "missing_code")]
 fn failure_redirect_leaves_not_connected(redirect_suffix: &str) {
     let keyring = mock_keyring();
-    let (token_url, mock_handle) = mock_token_endpoint("{}", 200);
+    let (token_url, mock_handle) = mock_token_endpoint("{}", HTTP_STATUS_OK);
     let provider = test_provider_with_timeout(keyring.clone(), &token_url, AUTH_TIMEOUT_SHORT);
 
     let (state, port) = begin_auth_and_extract(&provider);
@@ -360,7 +378,7 @@ fn failure_redirect_leaves_not_connected(redirect_suffix: &str) {
     let query = redirect_suffix.replace("{state}", &state);
     send_redirect(port, &query);
 
-    let final_status = wait_for_status_change(&provider, Duration::from_secs(3));
+    let final_status = wait_for_status_change(&provider, TEST_TIMEOUT_MEDIUM);
     assert_eq!(
         final_status,
         AuthStatus::NotConnected,
@@ -403,9 +421,11 @@ fn timeout_leaves_not_connected() {
 fn superseded_flow_does_not_connect() {
     let keyring = mock_keyring();
 
-    let mock_body = r#"{"access_token":"at-super","refresh_token":"rt-super","expires_in":3600,"token_type":"Bearer"}"#;
-    let (token_url1, mock1) = mock_token_endpoint(mock_body, 200);
-    let (_, _mock2) = mock_token_endpoint(mock_body, 200);
+    let mock_body = format!(
+        r#"{{"access_token":"at-super","refresh_token":"rt-super","expires_in":{TOKEN_EXPIRES_IN_SECS},"token_type":"Bearer"}}"#
+    );
+    let (token_url1, mock1) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
+    let (_, _mock2) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
 
     let provider = test_provider(keyring.clone(), &token_url1);
 
@@ -427,7 +447,7 @@ fn superseded_flow_does_not_connect() {
     send_redirect(port1, &format!("state={state1}&code=4%2Fcode"));
 
     let _ = mock1.join();
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(MOCK_POLL_DELAY);
 
     assert!(
         keyring.load().expect("load").is_none(),
@@ -499,35 +519,37 @@ fn disconnect_clears_cache_and_keyring() {
     );
 }
 
-#[test]
-fn access_token_nearly_expired_cache_triggers_refresh() {
+#[test_case(chrono::Duration::seconds(0) ; "at_expiry")]
+#[test_case(chrono::Duration::seconds(30) ; "within_margin_plus_30s")]
+#[test_case(chrono::Duration::seconds(60) ; "at_margin")]
+fn access_token_nearly_expired_cache_triggers_refresh(offset: chrono::Duration) {
     let keyring = mock_keyring();
     let (provider, mock_handle) = provider_with_refresh_mock(keyring.clone(), "fresh-at");
-
-    // Seed a cache token that expires exactly at test_now() — within the 60s margin.
-    provider.seed_access_token("stale-at".to_owned(), crate::test_support::test_now());
+    provider.seed_access_token(
+        "stale-at".to_owned(),
+        crate::test_support::test_now() + offset,
+    );
     keyring
         .save(&PersistedCredential {
             refresh_token: Some("rt".to_owned()),
             expires_at: crate::test_support::test_now() + chrono::Duration::hours(1),
         })
         .expect("seed keyring");
-
-    // Cache is present but expires_at <= now + 60s → must refresh.
     let at = provider
         .access_token(crate::test_support::test_now(), false)
         .expect("access_token (cache expired)");
     assert_eq!(at, "fresh-at");
-
     mock_handle.join().expect("mock join");
 }
 
 #[test]
 fn access_token_refresh_preserves_old_refresh_token() {
     let keyring = mock_keyring();
-    let mock_body = r#"{"access_token":"refreshed-at","expires_in":3600,"token_type":"Bearer"}"#;
+    let mock_body = format!(
+        r#"{{"access_token":"refreshed-at","expires_in":{TOKEN_EXPIRES_IN_SECS},"token_type":"Bearer"}}"#
+    );
     // Response deliberately omits `refresh_token` — old one must be kept.
-    let (token_url, mock_handle) = mock_token_endpoint(mock_body, 200);
+    let (token_url, mock_handle) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
     let provider = test_provider(keyring.clone(), &token_url);
 
     keyring
@@ -551,9 +573,10 @@ fn access_token_refresh_preserves_old_refresh_token() {
 #[test]
 fn access_token_refresh_updates_cache() {
     let keyring = mock_keyring();
-    let mock_body =
-        r#"{"access_token":"new-at","refresh_token":"rt","expires_in":3600,"token_type":"Bearer"}"#;
-    let (token_url, mock_handle) = mock_token_endpoint(mock_body, 200);
+    let mock_body = format!(
+        r#"{{"access_token":"new-at","refresh_token":"rt","expires_in":{TOKEN_EXPIRES_IN_SECS},"token_type":"Bearer"}}"#
+    );
+    let (token_url, mock_handle) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
     let provider = test_provider(keyring.clone(), &token_url);
 
     seed_expired_token(&keyring);
@@ -572,13 +595,12 @@ fn access_token_refresh_updates_cache() {
     mock_handle.join().expect("mock join");
 }
 
-#[test]
-fn access_token_fresh_cache_returns_without_http_call() {
+#[test_case(61 ; "just_above_margin")]
+#[test_case(7200 ; "far_future")]
+fn access_token_fresh_cache_returns_without_http_call(offset_secs: i64) {
     let (_, provider) = dead_provider();
-
-    // Seed the in-memory cache directly — no HTTP needed.
-    provider.seed_access_token("cached-at".to_owned(), future_expiry());
-
+    let expires_at = crate::test_support::test_now() + chrono::Duration::seconds(offset_secs);
+    provider.seed_access_token("cached-at".to_owned(), expires_at);
     let at = provider
         .access_token(crate::test_support::test_now(), false)
         .expect("access_token (cache hit)");
@@ -590,7 +612,6 @@ fn access_token_force_refresh_bypasses_cache() {
     let keyring = mock_keyring();
     let (provider, mock_handle) = provider_with_refresh_mock(keyring.clone(), "forced-at");
 
-    // Seed a valid cache entry AND a keyring credential.
     provider.seed_access_token("stale-at".to_owned(), future_expiry());
     keyring
         .save(&PersistedCredential {
@@ -682,7 +703,8 @@ fn auth_status_connected_when_cache_populated() {
 #[test]
 fn access_token_refresh_http_error_returns_err() {
     let keyring = mock_keyring();
-    let (token_url, _mock) = mock_token_endpoint("{\"error\":\"invalid_grant\"}", 400);
+    let (token_url, _mock) =
+        mock_token_endpoint("{\"error\":\"invalid_grant\"}", HTTP_STATUS_BAD_REQUEST);
     let provider = test_provider(keyring.clone(), &token_url);
     assert_refresh_error_contains(&keyring, &provider, "400");
 }
@@ -690,7 +712,8 @@ fn access_token_refresh_http_error_returns_err() {
 #[test]
 fn exchange_code_failure_leaves_not_connected() {
     let keyring = mock_keyring();
-    let (token_url, _mock) = mock_token_endpoint("{\"error\":\"invalid_code\"}", 400);
+    let (token_url, _mock) =
+        mock_token_endpoint("{\"error\":\"invalid_code\"}", HTTP_STATUS_BAD_REQUEST);
     let provider = test_provider(keyring.clone(), &token_url);
 
     run_exchange_assert_not_connected(&provider, "exchange failure must leave NotConnected");
@@ -706,9 +729,8 @@ fn exchange_success_but_save_fails_leaves_not_connected() {
     // the log::warn branch in finish_flow.
     let keyring = KeyringStore::with_mock_entry(fail_entry(false, true, false));
 
-    let mock_body =
-        r#"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"token_type":"Bearer"}"#;
-    let (token_url, _mock) = mock_token_endpoint(mock_body, 200);
+    let mock_body = mock_token_body();
+    let (token_url, _mock) = mock_token_endpoint(&mock_body, HTTP_STATUS_OK);
     let provider = test_provider(keyring, &token_url);
 
     run_exchange_assert_not_connected(
@@ -752,7 +774,7 @@ fn access_token_refresh_network_error_returns_err() {
 #[test]
 fn access_token_refresh_json_error_returns_err() {
     let keyring = mock_keyring();
-    let (token_url, _mock) = mock_token_endpoint("{\"not_a_token\": true}", 200);
+    let (token_url, _mock) = mock_token_endpoint("{\"not_a_token\": true}", HTTP_STATUS_OK);
     let provider = test_provider(keyring.clone(), &token_url);
     assert_refresh_error_contains(&keyring, &provider, "parse error");
 }
@@ -760,11 +782,7 @@ fn access_token_refresh_json_error_returns_err() {
 #[test]
 fn wait_for_status_change_returns_pending_on_timeout() {
     let keyring = mock_keyring();
-    let provider = test_provider_with_timeout(
-        keyring,
-        "http://127.0.0.1:1/token",
-        Duration::from_millis(100),
-    );
+    let provider = test_provider_with_timeout(keyring, "http://127.0.0.1:1/token", POLLING_TIMEOUT);
     provider
         .begin_auth(
             crate::test_support::test_now(),
@@ -773,4 +791,125 @@ fn wait_for_status_change_returns_pending_on_timeout() {
         .expect("begin_auth");
     let status = wait_for_status_change(&provider, Duration::ZERO);
     assert_eq!(status, AuthStatus::Pending);
+}
+
+fn creds(id: &str, secret: &str) -> GoogleCredentials {
+    GoogleCredentials {
+        client_id: id.to_owned(),
+        client_secret: secret.to_owned(),
+    }
+}
+
+#[test]
+fn resolve_prefers_keyring_over_compiled() {
+    let keyring_creds = creds("keyring-id", "keyring-secret");
+    let compiled_creds = creds("compiled-id", "compiled-secret");
+    let result = GoogleCredentials::resolve(Some(compiled_creds), || Ok(Some(keyring_creds)))
+        .expect("no error");
+    let got = result.expect("Some");
+    assert_eq!(got.client_id, "keyring-id");
+    assert_eq!(got.client_secret, "keyring-secret");
+}
+
+#[test]
+fn resolve_falls_back_to_compiled_when_keyring_empty() {
+    let compiled_creds = creds("compiled-id", "compiled-secret");
+    let result = GoogleCredentials::resolve(Some(compiled_creds), || Ok(None)).expect("no error");
+    let got = result.expect("Some");
+    assert_eq!(got.client_id, "compiled-id");
+}
+
+#[test]
+fn resolve_returns_none_when_both_absent() {
+    let result = GoogleCredentials::resolve(None, || Ok(None)).expect("no error");
+    assert!(result.is_none());
+}
+
+#[test]
+fn resolve_propagates_keyring_error() {
+    let err = GoogleCredentials::resolve(None, || {
+        Err(AppError::CalendarSync("keyring unavailable".into()))
+    });
+    assert!(matches!(err, Err(AppError::CalendarSync(_))));
+}
+
+#[test]
+fn env_or_keyring_prefers_keyring_over_compiled() {
+    let keyring_cred = creds("keyring-id", "keyring-secret");
+    let got = GoogleCredentials::env_or_keyring(|| Ok(Some(keyring_cred)))
+        .expect("no error")
+        .expect("must have creds");
+    assert_eq!(got.client_id, "keyring-id");
+}
+
+#[test]
+fn env_or_keyring_propagates_keyring_error() {
+    let result = GoogleCredentials::env_or_keyring(|| Err(AppError::CalendarSync("test".into())));
+    assert!(matches!(result, Err(AppError::CalendarSync(_))));
+}
+
+fn sample_client_cred() -> GoogleCredentials {
+    creds("test-client-id", "test-client-secret")
+}
+
+#[test]
+fn client_creds_save_then_load_roundtrip() {
+    let entry = make_mock_entry();
+    let writer = ClientCredentialStore::with_mock_entry(Arc::clone(&entry));
+    let reader = ClientCredentialStore::with_mock_entry(Arc::clone(&entry));
+
+    writer.save(&sample_client_cred()).expect("save");
+    let loaded = reader.load().expect("load").expect("Some");
+
+    assert_eq!(loaded.client_id, sample_client_cred().client_id);
+    assert_eq!(loaded.client_secret, sample_client_cred().client_secret);
+}
+
+#[test]
+fn client_creds_load_missing_returns_none() {
+    let store = ClientCredentialStore::with_mock_entry(make_mock_entry());
+    assert!(store.load().expect("load").is_none());
+}
+
+#[test]
+fn client_creds_load_corrupt_returns_err() {
+    let entry = make_mock_entry();
+    entry
+        .set_password("not-valid-json")
+        .expect("seed invalid json");
+    let store = ClientCredentialStore::with_mock_entry(Arc::clone(&entry));
+    let err = store.load().err().expect("expected Err for corrupt data");
+    let msg = err.to_string();
+    assert!(
+        msg.starts_with("Calendar sync error:"),
+        "expected CalendarSync variant, got: {msg}"
+    );
+    assert!(
+        !msg.contains("not-valid-json"),
+        "raw blob must not appear in error: {msg}"
+    );
+    assert!(msg.contains("unreadable"), "error: {msg}");
+}
+
+#[test]
+fn client_creds_save_keyring_failure_propagates() {
+    let store = ClientCredentialStore::with_mock_entry(fail_entry(false, true, false));
+    let err = store
+        .save(&sample_client_cred())
+        .expect_err("expected Err from save");
+    assert!(matches!(err, AppError::CalendarSync(_)));
+}
+
+#[test]
+fn client_creds_load_keyring_failure_propagates() {
+    let store = ClientCredentialStore::with_mock_entry(fail_entry(true, false, false));
+    let err = store.load().err().expect("expected Err from load");
+    let msg = err.to_string();
+    assert!(matches!(err, AppError::CalendarSync(_)));
+    assert!(
+        ["Secret Service", "Keychain", "Credential Manager"]
+            .iter()
+            .any(|s| msg.contains(s)),
+        "actionable keyring error must name a platform service: {msg}"
+    );
 }

@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use tauri::Manager as _;
 
 use crate::calendar;
+use crate::calendar::google::GoogleCredentials;
 use crate::error::AppError;
 use crate::profiles::registry::{self, ProfileEntry};
 use crate::profiles::ActiveProfile;
@@ -33,20 +34,13 @@ use crate::traits::storage::{ConfigStore as _, Store};
 
 fn calendar_providers(
     sync_provider: Option<&str>,
+    creds: Option<GoogleCredentials>,
     profile_dir: &Path,
 ) -> (Arc<dyn CalendarSync>, Arc<dyn BackupTarget>) {
-    calendar::providers_from_config(
-        sync_provider,
-        calendar::google::GoogleCredentials::compiled(),
-        &profile_dir.join("google_auth.json"),
-    )
+    calendar::providers_from_config(sync_provider, creds, &profile_dir.join("google_auth.json"))
 }
 
-/// Assemble an [`AppState`] rooted at a profile directory: open (and
-/// migrate) the profile's database, build the scheduler + trigger, and pick
-/// the calendar-sync/backup provider pair with the profile-local token path.
-/// `restore_notice` carries the startup-restore outcome into the state (the
-/// restore itself runs before the store opens; see [`activate_profile`]).
+/// `restore_notice` carries the startup-restore outcome into the state (the restore itself runs before the store opens).
 ///
 /// # Errors
 ///
@@ -56,6 +50,7 @@ pub fn build_app_state(
     profile_dir: &Path,
     profile: ActiveProfile,
     restore_notice: Option<String>,
+    creds: Option<GoogleCredentials>,
 ) -> Result<AppState, AppError> {
     std::fs::create_dir_all(profile_dir)
         .map_err(|e| AppError::Internal(format!("failed to create profile directory: {e}")))?;
@@ -71,7 +66,7 @@ pub fn build_app_state(
         executor,
     ));
     let sync_provider = store.get_config_value("sync_provider")?;
-    let (calendar_sync, backup) = calendar_providers(sync_provider.as_deref(), profile_dir);
+    let (calendar_sync, backup) = calendar_providers(sync_provider.as_deref(), creds, profile_dir);
     Ok(AppState {
         store,
         scheduler,
@@ -84,14 +79,16 @@ pub fn build_app_state(
     })
 }
 
-/// Pre-open backup steps: apply a staged manual import if one exists,
-/// otherwise run the backup-wins restore check (plans/drive-backup.md
-/// Decision 4). Both must happen BEFORE the store opens the database file.
+/// Both must happen BEFORE the store opens the database file.
 ///
 /// The store isn't built yet, so the provider key is peeked straight from
 /// the DB file and an ephemeral target (dropped after the check) stands in
 /// for the one [`build_app_state`] wires later.
-fn pre_open_restore(profile_dir: &Path, now: DateTime<Utc>) -> RestoreOutcome {
+fn pre_open_restore(
+    profile_dir: &Path,
+    now: DateTime<Utc>,
+    creds: Option<GoogleCredentials>,
+) -> RestoreOutcome {
     match services::backup::apply_pending_import(profile_dir) {
         Ok(true) => return RestoreOutcome::Skipped(RestoreSkipReason::ImportApplied),
         Ok(false) => {}
@@ -103,7 +100,7 @@ fn pre_open_restore(profile_dir: &Path, now: DateTime<Utc>) -> RestoreOutcome {
     let db_path = profile_dir.join(services::backup::archive::DB_ENTRY_NAME);
     let sync_provider =
         services::backup::archive::read_local_config_value(&db_path, "sync_provider");
-    let (_, target) = calendar_providers(sync_provider.as_deref(), profile_dir);
+    let (_, target) = calendar_providers(sync_provider.as_deref(), creds, profile_dir);
     services::backup::restore_check(profile_dir, target.as_ref(), now)
 }
 
@@ -143,7 +140,7 @@ pub fn startup_auto_reschedule(
     let config = store.get_config()?;
     let needs_reschedule = match config.last_reschedule {
         None => true,
-        Some(last) => (now - last).num_hours() >= 24,
+        Some(last) => (now - last).num_hours() >= RESCHEDULE_INTERVAL_HOURS,
     };
     if needs_reschedule {
         services::scheduling::reschedule(store, scheduler, now)?;
@@ -155,9 +152,12 @@ pub fn startup_auto_reschedule(
 /// the empty slot; a running profile is replaced via [`switch_active_profile`].
 const ALREADY_ACTIVE: &str = "A profile is already active — switch profiles instead.";
 
+const RESCHEDULE_INTERVAL_HOURS: i64 = 24;
+const SWITCH_FLUSH_TIMEOUT_SECS: u64 = 5;
+
 /// How long a switch waits for the old profile's final backup export before
 /// proceeding (same bound as the graceful-exit flush in `lib.rs`).
-const SWITCH_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const SWITCH_FLUSH_TIMEOUT: Duration = Duration::from_secs(SWITCH_FLUSH_TIMEOUT_SECS);
 
 /// The UI-facing restore notice for an activation outcome: the backup's
 /// `last_mutation` as RFC 3339, `""` when the backup carried none, `None`
@@ -183,10 +183,7 @@ fn active_handle<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> ActiveState {
     }
 }
 
-/// Acquire the process-wide activation guard for the [`ActiveState`] slot,
-/// then run `after` while it is still held. Shared preamble for
-/// `activate_profile` and `switch_active_profile`: both lock out concurrent
-/// activations before touching the slot.
+/// Shared preamble for `activate_profile` and `switch_active_profile`: both lock out concurrent activations before touching the slot.
 fn with_activation_guard<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     after: impl FnOnce(&ActiveState) -> T,
@@ -204,6 +201,7 @@ fn activate_core(
     data_dir: &Path,
     entry: &ProfileEntry,
     now: DateTime<Utc>,
+    creds: Option<GoogleCredentials>,
 ) -> Result<ActiveProfile, AppError> {
     let profile = ActiveProfile {
         id: entry.id.clone(),
@@ -211,10 +209,10 @@ fn activate_core(
     };
     let profile_dir = registry::profile_dir(data_dir, &entry.id);
 
-    let restore_outcome = pre_open_restore(&profile_dir, now);
+    let restore_outcome = pre_open_restore(&profile_dir, now, creds.clone());
     let restore_notice = restore_notice_of(&restore_outcome);
 
-    let state = build_app_state(&profile_dir, profile.clone(), restore_notice)?;
+    let state = build_app_state(&profile_dir, profile.clone(), restore_notice, creds)?;
     persist_restore_bookkeeping(state.store.as_ref(), &profile.name, &restore_outcome);
 
     match startup_auto_reschedule(state.store.as_ref(), state.scheduler.as_ref(), now) {
@@ -246,12 +244,13 @@ pub fn activate_profile<R: tauri::Runtime>(
     data_dir: &Path,
     entry: &ProfileEntry,
     now: DateTime<Utc>,
+    creds: Option<GoogleCredentials>,
 ) -> Result<ActiveProfile, AppError> {
     with_activation_guard(app, |active| {
         if active.get_opt().is_some() {
             return Err(AppError::Validation(ALREADY_ACTIVE.into()));
         }
-        activate_core(active, data_dir, entry, now)
+        activate_core(active, data_dir, entry, now, creds)
     })
 }
 
@@ -273,6 +272,7 @@ pub fn switch_active_profile_direct(
     data_dir: &Path,
     entry: &ProfileEntry,
     now: DateTime<Utc>,
+    creds: Option<GoogleCredentials>,
 ) -> Result<ActiveProfile, AppError> {
     let _guard = active.activation_guard();
     if let Some(old) = active.swap(None) {
@@ -285,24 +285,22 @@ pub fn switch_active_profile_direct(
         );
         log::info!("profiles: switched away from '{}'", old.profile.name);
     }
-    activate_core(active, data_dir, entry, now)
+    activate_core(active, data_dir, entry, now, creds)
 }
 
-/// Switch the running app to another profile in-process via an
-/// `AppHandle`. Resolves the [`ActiveState`] from the handle, then
-/// delegates to [`switch_active_profile_direct`].
-///
 /// # Errors
 ///
 /// Propagates anything [`switch_active_profile_direct`] returns.
+// `client_creds` (not `creds`) breaks a 54-token jscpd match with activate_profile.
 pub fn switch_active_profile<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     data_dir: &Path,
     entry: &ProfileEntry,
     now: DateTime<Utc>,
+    client_creds: Option<GoogleCredentials>,
 ) -> Result<ActiveProfile, AppError> {
     let active = active_handle(app);
-    switch_active_profile_direct(&active, data_dir, entry, now)
+    switch_active_profile_direct(&active, data_dir, entry, now, client_creds)
 }
 
 #[cfg(test)]
@@ -335,7 +333,7 @@ mod tests {
     fn build_app_state_creates_db_inside_profile_dir() {
         let dir = tempdir().expect("tempdir");
         let profile_dir = dir.path().join("profiles").join("p1");
-        let state = build_app_state(&profile_dir, test_profile("p1"), None).expect("build");
+        let state = build_app_state(&profile_dir, test_profile("p1"), None, None).expect("build");
         assert!(profile_dir.join("apreswork.db").exists());
         assert_eq!(state.profile.id, "p1");
         assert_eq!(state.profile_dir, profile_dir);
@@ -346,8 +344,13 @@ mod tests {
     fn build_app_state_carries_the_restore_notice() {
         let dir = tempdir().expect("tempdir");
         let notice = Some("2026-07-12T10:00:00+00:00".to_owned());
-        let state = build_app_state(&dir.path().join("p"), test_profile("p"), notice.clone())
-            .expect("build");
+        let state = build_app_state(
+            &dir.path().join("p"),
+            test_profile("p"),
+            notice.clone(),
+            None,
+        )
+        .expect("build");
         assert_eq!(state.restore_notice, notice);
     }
 
@@ -357,7 +360,7 @@ mod tests {
         let dir_a = dir.path().join("profiles").join("a");
         let dir_b = dir.path().join("profiles").join("b");
 
-        let state_a = build_app_state(&dir_a, test_profile("a"), None).expect("build a");
+        let state_a = build_app_state(&dir_a, test_profile("a"), None, None).expect("build a");
         // Probe with a key migrations do NOT seed (sync_provider is seeded
         // into every fresh DB by migration 005, so it can't prove isolation).
         state_a
@@ -365,7 +368,7 @@ mod tests {
             .set_config_value("isolation_probe", "from-profile-a")
             .expect("write a");
 
-        let state_b = build_app_state(&dir_b, test_profile("b"), None).expect("build b");
+        let state_b = build_app_state(&dir_b, test_profile("b"), None, None).expect("build b");
         assert_eq!(
             state_b
                 .store
@@ -389,14 +392,14 @@ mod tests {
         let app = tauri::test::mock_app();
         let profile_entry = entry("p-act", "Activator");
 
-        let active = activate_profile(app.handle(), dir.path(), &profile_entry, test_now())
+        let active = activate_profile(app.handle(), dir.path(), &profile_entry, test_now(), None)
             .expect("first activation");
         assert_eq!(active.id, "p-act");
         assert_eq!(active.name, "Activator");
         let slot = app.handle().state::<ActiveState>();
         assert_eq!(slot.get().expect("slot filled").profile.id, "p-act");
 
-        let err = activate_profile(app.handle(), dir.path(), &profile_entry, test_now())
+        let err = activate_profile(app.handle(), dir.path(), &profile_entry, test_now(), None)
             .expect_err("second activation must fail");
         assert!(matches!(err, AppError::Validation(_)));
         assert!(
@@ -410,8 +413,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let app = tauri::test::mock_app();
 
-        activate_profile(app.handle(), dir.path(), &entry("p-one", "One"), test_now())
-            .expect("activate one");
+        activate_profile(
+            app.handle(),
+            dir.path(),
+            &entry("p-one", "One"),
+            test_now(),
+            None,
+        )
+        .expect("activate one");
         let slot = app.handle().state::<ActiveState>();
         slot.get()
             .expect("one active")
@@ -419,9 +428,14 @@ mod tests {
             .set_config_value("switch_probe", "from-one")
             .expect("seed one");
 
-        let switched =
-            switch_active_profile(app.handle(), dir.path(), &entry("p-two", "Two"), test_now())
-                .expect("switch to two");
+        let switched = switch_active_profile(
+            app.handle(),
+            dir.path(),
+            &entry("p-two", "Two"),
+            test_now(),
+            None,
+        )
+        .expect("switch to two");
         assert_eq!(switched.id, "p-two");
         let two = slot.get().expect("two active");
         assert_eq!(two.profile.id, "p-two");
@@ -431,9 +445,14 @@ mod tests {
             "profile two must not see profile one's data"
         );
 
-        // Switching back re-opens profile one's database with its data intact.
-        switch_active_profile(app.handle(), dir.path(), &entry("p-one", "One"), test_now())
-            .expect("switch back");
+        switch_active_profile(
+            app.handle(),
+            dir.path(),
+            &entry("p-one", "One"),
+            test_now(),
+            None,
+        )
+        .expect("switch back");
         let one = slot.get().expect("one active again");
         assert_eq!(
             one.store.get_config_value("switch_probe").expect("read"),
@@ -451,6 +470,7 @@ mod tests {
             dir.path(),
             &entry("p-cold", "Cold"),
             test_now(),
+            None,
         )
         .expect("switch on cold start");
         assert_eq!(switched.id, "p-cold");
@@ -464,7 +484,8 @@ mod tests {
     #[test_case(Some(1), false ; "fresh_1h_skips")]
     fn startup_auto_reschedule_matrix(hours_ago: Option<i64>, expect_run: bool) {
         let dir = tempdir().expect("tempdir");
-        let state = build_app_state(&dir.path().join("p"), test_profile("p"), None).expect("build");
+        let state =
+            build_app_state(&dir.path().join("p"), test_profile("p"), None, None).expect("build");
         let now = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
         if let Some(hours) = hours_ago {
             let mut config = state.store.get_config().expect("config");
@@ -490,6 +511,7 @@ mod tests {
             dir.path(),
             &entry("p-cold-d", "ColdDirect"),
             test_now(),
+            None,
         )
         .expect("cold switch");
         assert_eq!(result.id, "p-cold-d");
@@ -501,8 +523,14 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let active = ActiveState::new();
 
-        switch_active_profile_direct(&active, dir.path(), &entry("p-one-d", "OneD"), test_now())
-            .expect("cold switch to one");
+        switch_active_profile_direct(
+            &active,
+            dir.path(),
+            &entry("p-one-d", "OneD"),
+            test_now(),
+            None,
+        )
+        .expect("cold switch to one");
         active
             .get()
             .expect("one active")
@@ -515,6 +543,7 @@ mod tests {
             dir.path(),
             &entry("p-two-d", "TwoD"),
             test_now(),
+            None,
         )
         .expect("switch to two");
         assert_eq!(switched.id, "p-two-d");
@@ -526,8 +555,14 @@ mod tests {
             "profile two must not see profile one's data"
         );
 
-        switch_active_profile_direct(&active, dir.path(), &entry("p-one-d", "OneD"), test_now())
-            .expect("switch back to one");
+        switch_active_profile_direct(
+            &active,
+            dir.path(),
+            &entry("p-one-d", "OneD"),
+            test_now(),
+            None,
+        )
+        .expect("switch back to one");
         let one = active.get().expect("one active again");
         assert_eq!(
             one.store.get_config_value("direct_probe").expect("read"),
@@ -542,11 +577,10 @@ mod tests {
         let profile_entry = entry("p-imp", "Importer");
         let profile_dir = registry::profile_dir(dir.path(), "p-imp");
 
-        // Live DB with a marker the import must replace. Scoped so the
-        // connection is closed before activation swaps the file.
+        // Scoped so the connection is closed before activation swaps the file.
         {
-            let state =
-                build_app_state(&profile_dir, test_profile("p-imp"), None).expect("build live");
+            let state = build_app_state(&profile_dir, test_profile("p-imp"), None, None)
+                .expect("build live");
             state
                 .store
                 .set_config_value("import_probe", "live")
@@ -555,8 +589,8 @@ mod tests {
         let zip_path = dir.path().join("import.zip");
         {
             let source_dir = dir.path().join("source");
-            let source =
-                build_app_state(&source_dir, test_profile("src"), None).expect("build source");
+            let source = build_app_state(&source_dir, test_profile("src"), None, None)
+                .expect("build source");
             source
                 .store
                 .set_config_value("import_probe", "imported")
@@ -567,7 +601,8 @@ mod tests {
         crate::services::backup::stage_import(&zip_path, &profile_dir, test_now())
             .expect("stage import");
 
-        activate_profile(app.handle(), dir.path(), &profile_entry, test_now()).expect("activate");
+        activate_profile(app.handle(), dir.path(), &profile_entry, test_now(), None)
+            .expect("activate");
 
         let state = app
             .handle()

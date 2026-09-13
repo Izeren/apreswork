@@ -33,11 +33,16 @@ fn validate_positive_duration(duration: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+const MIN_CHUNK_MINUTES: i64 = 5;
+const MIN_CONTINUOUS_MINUTES: i64 = 15;
+const MAX_CONTINUOUS_MINUTES: i64 = 1440;
+const MAX_BREAK_MINUTES: i64 = 480;
+
 fn validate_min_chunk(min_chunk: i64) -> Result<(), AppError> {
-    if min_chunk < 5 {
-        return Err(AppError::Validation(
-            "min_chunk_minutes must be at least 5".to_owned(),
-        ));
+    if min_chunk < MIN_CHUNK_MINUTES {
+        return Err(AppError::Validation(format!(
+            "min_chunk_minutes must be at least {MIN_CHUNK_MINUTES}"
+        )));
     }
     Ok(())
 }
@@ -174,13 +179,7 @@ pub fn required_window_minutes(
     }
 }
 
-/// Validates that a task's timing parameters can be accommodated by the
-/// schedule's capacity.
-///
-/// The required window comes from [`required_window_minutes`]: the full
-/// duration for effectively unsplittable tasks, the minimum chunk otherwise
-/// (chunks always fit in any window at least as large as the minimum chunk
-/// size).
+/// See [`required_window_minutes`] for the required window size definition.
 ///
 /// # Errors
 ///
@@ -212,9 +211,6 @@ pub fn validate_task_fits_schedule(
     }
 }
 
-/// Validates that a recurring template's duration can be accommodated by the
-/// schedule's capacity.
-///
 /// Recurring instances are always created with `no_split = true`, so the full
 /// template duration must fit within the schedule's largest single window.
 ///
@@ -286,21 +282,21 @@ pub fn validate_schedule_windows(windows: &[ScheduleWindowInput]) -> Result<(), 
     Ok(())
 }
 
-/// Returns `true` if two windows on the same day of week overlap.
-///
-/// Two windows are considered overlapping when they share the same
-/// `day_of_week` and their time ranges intersect (touching boundaries
-/// are OK — e.g., 18:00–20:00 and 20:00–22:00 do not overlap).
+/// Two windows overlap when they share the same `day_of_week` and their
+/// time ranges intersect (touching is OK: 18:00–20:00 and 20:00–22:00
+/// do not overlap).
 fn windows_overlap(a: &ScheduleWindowInput, b: &ScheduleWindowInput) -> bool {
     a.day_of_week == b.day_of_week && a.start_time < b.end_time && b.start_time < a.end_time
 }
 
-/// Inclusive bounds for [`AppConfig::planning_horizon_days`].
-pub const PLANNING_HORIZON_DAYS_RANGE: (i64, i64) = (1, 365);
-/// Inclusive bounds for [`AppConfig::max_continuous_minutes`].
-pub const MAX_CONTINUOUS_MINUTES_RANGE: (i64, i64) = (15, 1440);
-/// Inclusive bounds for [`AppConfig::min_break_minutes`].
-pub const MIN_BREAK_MINUTES_RANGE: (i64, i64) = (0, 480);
+const MIN_PLANNING_HORIZON_DAYS: i64 = 1;
+const MAX_PLANNING_HORIZON_DAYS: i64 = 365;
+pub const PLANNING_HORIZON_DAYS_RANGE: (i64, i64) =
+    (MIN_PLANNING_HORIZON_DAYS, MAX_PLANNING_HORIZON_DAYS);
+pub const MAX_CONTINUOUS_MINUTES_RANGE: (i64, i64) =
+    (MIN_CONTINUOUS_MINUTES, MAX_CONTINUOUS_MINUTES);
+const MIN_BREAK_MINUTES: i64 = 0;
+pub const MIN_BREAK_MINUTES_RANGE: (i64, i64) = (MIN_BREAK_MINUTES, MAX_BREAK_MINUTES);
 
 fn check_range(value: i64, (lo, hi): (i64, i64), field: &str) -> Result<(), AppError> {
     if !(lo..=hi).contains(&value) {
@@ -342,13 +338,49 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Maximum length (in bytes) for a Google OAuth client credential value.
+///
+/// Platform keyrings impose backend-specific length limits. This cap enforces
+/// a conservative bound at the trust boundary before the value reaches the OS.
+pub(crate) const CLIENT_CRED_MAX_LEN: usize = 512;
+
+fn validate_credential(value: &str, field_name: &str) -> Result<(), AppError> {
+    if value.trim().is_empty() {
+        return Err(AppError::Validation(format!(
+            "{field_name} must not be empty"
+        )));
+    }
+    if value.len() > CLIENT_CRED_MAX_LEN {
+        return Err(AppError::Validation(format!(
+            "{field_name} must not exceed {CLIENT_CRED_MAX_LEN} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate Google OAuth client credentials from user input.
+///
+/// Whitespace-only values are treated as empty. Interior control characters
+/// and newlines are accepted — the `oauth2` crate encodes them safely.
+///
+/// # Errors
+///
+/// Returns [`AppError::Validation`] when `client_id` or `client_secret` is
+/// empty (after trim) or longer than [`CLIENT_CRED_MAX_LEN`] bytes.
+pub fn validate_client_credentials(client_id: &str, client_secret: &str) -> Result<(), AppError> {
+    validate_credential(client_id, "client_id")?;
+    validate_credential(client_secret, "client_secret")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         validate_config, validate_create_schedule, validate_create_task, validate_create_template,
         validate_schedule_windows, validate_task_dates, validate_task_fits_schedule,
         validate_template_fits_schedule, validate_update_task, validate_update_template,
-        windows_overlap,
+        windows_overlap, MAX_BREAK_MINUTES, MAX_CONTINUOUS_MINUTES, MAX_PLANNING_HORIZON_DAYS,
+        MIN_BREAK_MINUTES, MIN_CHUNK_MINUTES, MIN_CONTINUOUS_MINUTES, MIN_PLANNING_HORIZON_DAYS,
     };
     use crate::domain::models::AppConfig;
     use chrono::{DateTime, NaiveTime, TimeZone, Utc, Weekday};
@@ -360,7 +392,7 @@ mod tests {
     };
     use crate::domain::{cadence::Cadence, enums::Priority};
     use crate::error::AppError;
-    use crate::test_support::assert_validation;
+    use crate::test_support::{assert_validation, assert_validation_contains};
 
     /// Returns a `DateTime<Utc>` at midnight on the given date. Used in
     /// `#[test_case]` attributes where inline construction is needed.
@@ -436,7 +468,6 @@ mod tests {
         }
     }
 
-    // (duration, min_chunk, no_split, largest, schedule_name, should_pass)
     #[test_case(60, 30, false, 90, "S", true  ; "splittable min_chunk fits")]
     #[test_case(60, 30, false, 29, "S", false ; "splittable min_chunk exceeds largest")]
     #[test_case(60, 30, false, 30, "S", true  ; "splittable min_chunk equals largest boundary")]
@@ -498,8 +529,8 @@ mod tests {
     #[test_case(60, Some(30), true  ; "valid input")]
     #[test_case( 0, Some(30), false ; "zero duration")]
     #[test_case(-1, Some(30), false ; "negative duration")]
-    #[test_case(60, Some(4),  false ; "min chunk below 5")]
-    #[test_case(60, Some(5),  true  ; "min chunk exactly 5")]
+    #[test_case(60, Some(4),                   false ; "min chunk below 5")]
+    #[test_case(60, Some(MIN_CHUNK_MINUTES),   true  ; "min chunk exactly 5")]
     fn create_task(duration: i64, min_chunk: Option<i64>, should_pass: bool) {
         let mut input = valid_create_task();
         input.duration_minutes = duration;
@@ -516,8 +547,8 @@ mod tests {
     #[test_case(Some(120), None,     true  ; "valid duration")]
     #[test_case(Some(0),   None,     false ; "zero duration")]
     #[test_case(Some(-1),  None,     false ; "negative duration")]
-    #[test_case(None,      Some(3),  false ; "min chunk below 5")]
-    #[test_case(None,      Some(5),  true  ; "min chunk exactly 5")]
+    #[test_case(None,      Some(3),                   false ; "min chunk below 5")]
+    #[test_case(None,      Some(MIN_CHUNK_MINUTES),   true  ; "min chunk exactly 5")]
     fn update_task(duration: Option<i64>, min_chunk: Option<i64>, should_pass: bool) {
         let mut input = valid_update_task();
         input.duration_minutes = duration;
@@ -736,8 +767,8 @@ mod tests {
     }
 
     #[test_case(30, 120, 5, "UTC",             true  ; "seeded defaults")]
-    #[test_case(1, 15, 0, "UTC",               true  ; "all lower bounds")]
-    #[test_case(365, 1440, 480, "Europe/London", true ; "all upper bounds")]
+    #[test_case(MIN_PLANNING_HORIZON_DAYS, MIN_CONTINUOUS_MINUTES, MIN_BREAK_MINUTES, "UTC",            true  ; "all lower bounds")]
+    #[test_case(MAX_PLANNING_HORIZON_DAYS, MAX_CONTINUOUS_MINUTES, MAX_BREAK_MINUTES, "Europe/London", true  ; "all upper bounds")]
     #[test_case(0, 120, 5, "UTC",              false ; "horizon below range")]
     #[test_case(366, 120, 5, "UTC",            false ; "horizon above range")]
     #[test_case(30, 14, 5, "UTC",              false ; "max continuous below range")]
@@ -776,5 +807,37 @@ mod tests {
             ),
             other => panic!("expected Validation error, got: {other:?}"),
         }
+    }
+
+    // ── validate_client_credentials ──────────────────────────────────────────
+
+    use super::{validate_client_credentials, CLIENT_CRED_MAX_LEN};
+
+    #[test_case("",    "secret", "client_id"     ; "empty_id")]
+    #[test_case("   ", "secret", "client_id"     ; "whitespace_id")]
+    #[test_case("id",  "",       "client_secret" ; "empty_secret")]
+    #[test_case("id",  "   ",    "client_secret" ; "whitespace_secret")]
+    fn client_creds_rejects_empty(id: &str, secret: &str, field: &str) {
+        let result = validate_client_credentials(id, secret);
+        assert_validation_contains(&result, field);
+    }
+
+    #[test]
+    fn client_creds_rejects_id_too_long() {
+        let long = "a".repeat(CLIENT_CRED_MAX_LEN + 1);
+        let result = validate_client_credentials(&long, "secret");
+        assert_validation_contains(&result, "client_id");
+    }
+
+    #[test]
+    fn client_creds_rejects_secret_too_long() {
+        let long = "a".repeat(CLIENT_CRED_MAX_LEN + 1);
+        let result = validate_client_credentials("id", &long);
+        assert_validation_contains(&result, "client_secret");
+    }
+
+    #[test]
+    fn client_creds_accepts_valid_pair() {
+        assert!(validate_client_credentials("my-id", "my-secret").is_ok());
     }
 }

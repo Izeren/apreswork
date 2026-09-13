@@ -4,7 +4,7 @@
     "findings": {}
   },
   "src-tauri/src/api/http_server/mod.rs": {
-    "blob": "d0414c6d2cd738ee12704c19552c078a44821bd2",
+    "blob": "6e61dccecca79d3f41f611521fd124d7b8a4bda8",
     "findings": {
       "83a1b624-0500-4139-bf56-b2b6778d3d0f": {
         "agent": "code-smell-nitpicker",
@@ -59,7 +59,7 @@
     }
   },
   "src-tauri/src/api/http_server/tests/mod.rs": {
-    "blob": "447caa90f5c9cf4c3d74be94cc6afad276003734",
+    "blob": "a2b1de4128c4b0af62489bd08ce8ed578741e667",
     "findings": {
       "67a6992c-c98f-4988-8afc-57468d569fbf": {
         "agent": "test-param-enforcer",
@@ -86,7 +86,7 @@
     }
   },
   "src-tauri/src/api/http_server/tests/profiles.rs": {
-    "blob": "28e3cc293cf959cc0557bad5f69dac85f2961a51",
+    "blob": "e993445b6e4b0e4f15a926733347b6fd04573d1b",
     "findings": {}
   },
   "src-tauri/src/api/http_server/tests/tasks.rs": {
@@ -133,7 +133,7 @@
     "findings": {}
   },
   "src-tauri/src/calendar/google.rs": {
-    "blob": "447fa099367ba57f982f065667f689fb2e37c3c1",
+    "blob": "510bde776f78a7c85069be06a91aff3f5a715619",
     "findings": {
       "b41c90c4-ad6c-4061-a89d-7a6063766533": {
         "agent": "code-smell-nitpicker",
@@ -149,7 +149,11 @@
     }
   },
   "src-tauri/src/calendar/google/tests.rs": {
-    "blob": "e986bd23cd2cc210b29ec06ed2a81cb496a647eb",
+    "blob": "fee6b9162712f72bbfdf9b1cc0fc57cdbecbc617",
+    "findings": {}
+  },
+  "src-tauri/src/calendar/google_client_creds.rs": {
+    "blob": "134eb4d9ce8d64e07b820fc648de0b90b413a7a0",
     "findings": {}
   },
   "src-tauri/src/calendar/google_http.rs": {
@@ -246,7 +250,7 @@
     "findings": {}
   },
   "src-tauri/src/calendar/google_token.rs": {
-    "blob": "1054e2b1f79a042362a9ca7032a6428c309bb57b",
+    "blob": "10218b629c9afc25c568b51245005cfcde7de121",
     "findings": {
       "f7b09266-ce58-496d-9abf-99ca2d060209": {
         "agent": "code-smell-nitpicker",
@@ -262,7 +266,7 @@
     }
   },
   "src-tauri/src/calendar/mod.rs": {
-    "blob": "d0f4fbfbb3e2a0af689ceebcf03cf2828cd344a2",
+    "blob": "935fcb13fd064062405b9c7dc43be737d5c2bdb4",
     "findings": {
       "5bff361e-059a-4c82-a5ba-08a66e8e8007": {
         "agent": "code-smell-nitpicker",
@@ -324,12 +328,16 @@
     "blob": "9150e34e2b68eb2ec359668268d06cec5b5801a6",
     "findings": {}
   },
+  "src-tauri/src/commands/credentials_commands.rs": {
+    "blob": "308040ac035477be08c680abaef455ab8f69bf29",
+    "findings": {}
+  },
   "src-tauri/src/commands/mod.rs": {
-    "blob": "4fb5a6f4dc476945fce7ac02e8e50c5aa30408c7",
+    "blob": "cb3f7f48adfdbd5cb7df891b4cc82165b12222a8",
     "findings": {}
   },
   "src-tauri/src/commands/profile_commands.rs": {
-    "blob": "3b743227739f5df7e3a33bf88f3673a19881834f",
+    "blob": "10f86cb995d77112d7bb2f4c28fd522e9d5e2b30",
     "findings": {}
   },
   "src-tauri/src/commands/recurring_commands.rs": {
@@ -489,7 +497,7 @@
     "findings": {}
   },
   "src-tauri/src/domain/validation.rs": {
-    "blob": "0778d9656fcf4d20b521055325574efd494663ba",
+    "blob": "0f001621ba0290f0c1578baf16149acdb07f2327",
     "findings": {}
   },
   "src-tauri/src/error.rs": {
@@ -497,7 +505,7 @@
     "findings": {}
   },
   "src-tauri/src/lib.rs": {
-    "blob": "dc7c829f299dcdf888543c97051345769b28bc22",
+    "blob": "1dd47f3802e0b9b855b902156001fa7952f546e0",
     "findings": {}
   },
   "src-tauri/src/main.rs": {
@@ -505,7 +513,7 @@
     "findings": {}
   },
   "src-tauri/src/profiles/activate.rs": {
-    "blob": "07e48b94ac2f538cfdb1763edef5e0f31b133081",
+    "blob": "881b54ad9518e5d35f47e04fc7ff534c5a5bc1db",
     "findings": {
       "d69dba51-b10b-4dd7-adcd-89becef96f30": {
         "agent": "doc-slop-reviewer",

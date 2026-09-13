@@ -17,12 +17,22 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// Credential data persisted in the OS keyring.
+/// OS keyring service name shared by all keyring entries in this app.
 ///
+/// Every call site must use this constant — never a string literal.
+pub(crate) const KEYRING_SERVICE: &str = "com.apreswork.app";
+
+/// Keyring username for the app-wide Google OAuth client credentials entry.
+pub(crate) const CLIENT_CREDS_KEY: &str = "google-client-creds";
+
+#[cfg(all(unix, test))]
+const UNIX_TOKEN_FILE_MODE: u32 = 0o600;
+
 /// Serialized as a JSON blob stored under the (service, username) keyring key.
 /// The `access_token` field from the legacy `google_auth.json` format is not
 /// present — access tokens are memory-only.
@@ -62,7 +72,7 @@ pub(crate) fn keyring_key(path: &Path) -> (String, String) {
         // (profiles/<uuid>/google_auth.json always has a usable parent basename).
         .unwrap_or("default");
     (
-        "com.apreswork.app".to_owned(),
+        KEYRING_SERVICE.to_owned(),
         format!("google-oauth:{profile_id}"),
     )
 }
@@ -85,14 +95,52 @@ fn keyring_error_message(err: &keyring::Error) -> String {
     }
 }
 
-fn map_keyring_error(err: &keyring::Error) -> AppError {
+pub(crate) fn map_keyring_error(err: &keyring::Error) -> AppError {
     AppError::CalendarSync(keyring_error_message(err))
+}
+
+/// Load and deserialize a blob from the OS keyring entry.
+///
+/// Returns `Ok(None)` when the entry does not exist yet.
+///
+/// # Errors
+///
+/// Returns [`AppError::CalendarSync`] when the keyring is unavailable or the
+/// stored blob cannot be deserialized. The raw blob is never included in the
+/// error message.
+pub(crate) fn load_blob<T: DeserializeOwned>(
+    entry: &keyring::Entry,
+    corrupt_msg: &str,
+) -> Result<Option<T>, AppError> {
+    let raw = match entry.get_password() {
+        Ok(s) => s,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(e) => return Err(map_keyring_error(&e)),
+    };
+    serde_json::from_str::<T>(&raw)
+        .map(Some)
+        .map_err(|_| AppError::CalendarSync(corrupt_msg.to_owned()))
+}
+
+/// Serialize a value and write it to the OS keyring entry.
+///
+/// # Errors
+///
+/// Returns [`AppError::CalendarSync`] when the keyring is unavailable.
+pub(crate) fn save_blob<T: Serialize>(
+    entry: &keyring::Entry,
+    data: &T,
+    serialize_err_msg: &str,
+) -> Result<(), AppError> {
+    let json = serde_json::to_string(data)
+        .map_err(|_| AppError::CalendarSync(serialize_err_msg.to_owned()))?;
+    entry.set_password(&json).map_err(|e| map_keyring_error(&e))
 }
 
 impl KeyringStore {
     /// Production constructor: derives the keyring key from `token_path`.
     ///
-    /// The parent directory basename is the profile id (single policy).
+    /// See [`keyring_key`] for the key-derivation policy.
     ///
     /// # Errors
     ///
@@ -124,30 +172,17 @@ impl KeyringStore {
     /// Returns [`AppError::CalendarSync`] when the keyring is unavailable or
     /// the stored blob cannot be deserialized.
     pub fn load(&self) -> Result<Option<PersistedCredential>, AppError> {
-        let raw = match self.entry.get_password() {
-            Ok(s) => s,
-            Err(keyring::Error::NoEntry) => return Ok(None),
-            Err(e) => return Err(map_keyring_error(&e)),
-        };
-        serde_json::from_str::<PersistedCredential>(&raw)
-            .map(Some)
-            .map_err(|_| {
-                AppError::CalendarSync(
-                    "stored credential is unreadable — disconnect and reconnect Google Calendar"
-                        .to_owned(),
-                )
-            })
+        load_blob(
+            &self.entry,
+            "stored credential is unreadable — disconnect and reconnect Google Calendar",
+        )
     }
 
     /// # Errors
     ///
     /// Returns [`AppError::CalendarSync`] when the keyring is unavailable.
     pub fn save(&self, cred: &PersistedCredential) -> Result<(), AppError> {
-        let json = serde_json::to_string(cred)
-            .map_err(|_| AppError::CalendarSync("cannot serialize credential".to_owned()))?;
-        self.entry
-            .set_password(&json)
-            .map_err(|e| map_keyring_error(&e))
+        save_blob(&self.entry, cred, "cannot serialize credential")
     }
 
     /// Delete the stored credential.
@@ -165,21 +200,55 @@ impl KeyringStore {
     }
 }
 
-/// Transient token returned by the OAuth exchange worker.
+/// A single app-wide entry stores `client_id` and `client_secret` as a JSON
+/// blob. Profile-scoped entries are not used because client credentials are
+/// shared across all profiles.
 ///
-/// No `Debug` derive — avoids accidental token exposure via `{:?}`.
+/// Production instances come from [`ClientCredentialStore::new`]; test
+/// instances from [`ClientCredentialStore::with_mock_entry`].
+///
+/// The typed `load` and `save` methods live in `calendar::google_client_creds`
+/// to stay within the per-file line limit without creating a circular import.
+#[derive(Clone)]
+pub struct ClientCredentialStore {
+    pub(crate) entry: Arc<keyring::Entry>,
+}
+
+impl ClientCredentialStore {
+    /// Production constructor: builds the fixed app-wide keyring entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::CalendarSync`] if the platform keyring rejects the
+    /// key values (for example, exceeds length limits).
+    pub fn new() -> Result<Self, AppError> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, CLIENT_CREDS_KEY)
+            .map_err(|e| map_keyring_error(&e))?;
+        Ok(Self {
+            entry: Arc::new(entry),
+        })
+    }
+
+    /// Test constructor: accepts a pre-built [`keyring::Entry`].
+    #[cfg(test)]
+    pub(crate) fn with_mock_entry(entry: Arc<keyring::Entry>) -> Self {
+        Self { entry }
+    }
+}
+
+/// See `PersistedCredential` for the no-`Debug` safety rationale.
 /// `Clone` is provided so the caller can capture the refresh token before
 /// moving the struct into `finish_flow`.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StoredToken {
     pub access_token: String,
-    /// Long-lived refresh token (Google sometimes omits it on re-consent).
+    /// See `PersistedCredential::refresh_token`.
     pub refresh_token: Option<String>,
     /// Absolute expiry (UTC). Compare against `Utc::now() + 60s` margin.
     pub expires_at: DateTime<Utc>,
 }
 
-/// Thin wrapper around the token file path — **test-only legacy format**.
+/// Legacy format (test-only).
 #[cfg(test)]
 #[derive(Clone)]
 pub struct TokenFile {
@@ -266,7 +335,7 @@ impl TokenFile {
             .truncate(true)
             // Mode is set at open time — before any content is written — per
             // the plan requirement (never chmod after).
-            .mode(0o600)
+            .mode(UNIX_TOKEN_FILE_MODE)
             .open(&self.path)
             .map_err(|e| {
                 AppError::CalendarSync(format!(
@@ -352,6 +421,15 @@ pub(crate) mod test_support {
         }
     }
 
+    /// Build a [`keyring::Entry`] backed by a [`keyring::mock::MockCredential`].
+    ///
+    /// Shared by `google_token` tests and `google` tests.
+    pub(crate) fn make_mock_entry() -> Arc<keyring::Entry> {
+        Arc::new(keyring::Entry::new_with_credential(Box::new(
+            keyring::mock::MockCredential::default(),
+        )))
+    }
+
     /// Build a [`keyring::Entry`] backed by a [`FailCredential`].
     pub(crate) fn fail_entry(
         fail_load: bool,
@@ -375,18 +453,14 @@ mod tests {
     use chrono::TimeZone as _;
     use tempfile::tempdir;
 
-    use super::test_support::fail_entry;
+    use super::test_support::{fail_entry, make_mock_entry};
+    #[cfg(unix)]
+    use super::UNIX_TOKEN_FILE_MODE;
     use super::{
-        keyring_error_message, keyring_key, KeyringStore, PersistedCredential, StoredToken,
-        TokenFile,
+        keyring_error_message, keyring_key, ClientCredentialStore, KeyringStore,
+        PersistedCredential, StoredToken, TokenFile,
     };
     use crate::error::AppError;
-
-    fn make_mock_entry() -> Arc<keyring::Entry> {
-        Arc::new(keyring::Entry::new_with_credential(Box::new(
-            keyring::mock::MockCredential::default(),
-        )))
-    }
 
     fn sample_cred() -> PersistedCredential {
         PersistedCredential {
@@ -488,6 +562,13 @@ mod tests {
     }
 
     #[test]
+    fn client_credential_store_new_constructs_entry() {
+        // Entry::new constructs the handle only — no keyring daemon connection.
+        // Same safety property as KeyringStore::for_token_path above.
+        let _store = ClientCredentialStore::new().expect("entry construction must succeed");
+    }
+
+    #[test]
     fn keyring_load_corrupt_raw_data_returns_err() {
         let entry = make_mock_entry();
         entry
@@ -566,8 +647,7 @@ mod tests {
         let path = dir.path().join("corrupt.json");
         std::fs::write(&path, b"CORRUPT_MARKER_XYZ").expect("write corrupt");
         let tf = TokenFile::new(path);
-        // unwrap_err() needs T: Debug; StoredToken deliberately omits Debug.
-        // Use err().expect() instead — AppError does implement Debug.
+        // see keyring_load_corrupt_raw_data_returns_err
         let err = tf.load().err().expect("expected Err for corrupt JSON");
         match &err {
             AppError::CalendarSync(msg) => {
@@ -627,7 +707,10 @@ mod tests {
         tf.save(&sample_token()).expect("save");
         let meta = std::fs::metadata(&path).expect("metadata");
         let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "expected mode 0600, got {mode:#o}");
+        assert_eq!(
+            mode, UNIX_TOKEN_FILE_MODE,
+            "expected mode 0600, got {mode:#o}"
+        );
     }
 
     #[test]

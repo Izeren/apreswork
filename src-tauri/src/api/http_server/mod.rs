@@ -58,7 +58,6 @@ impl IntoResponse for AppError {
                 format!("Not found: {entity} with id {id}"),
             ),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "validation", msg.clone()),
-            // SECURITY: log real error, return generic message to client.
             AppError::Database(_) => {
                 log::error!("API database error: {self}");
                 (
@@ -111,6 +110,7 @@ impl IntoResponse for AppError {
 pub struct RouterState {
     pub(crate) active: ActiveState,
     pub(crate) profiles: Arc<ProfilesState>,
+    pub(crate) creds: Option<crate::calendar::google::GoogleCredentials>,
 }
 
 impl FromRef<RouterState> for ActiveState {
@@ -122,6 +122,12 @@ impl FromRef<RouterState> for ActiveState {
 impl FromRef<RouterState> for Arc<ProfilesState> {
     fn from_ref(state: &RouterState) -> Self {
         state.profiles.clone()
+    }
+}
+
+impl FromRef<RouterState> for Option<crate::calendar::google::GoogleCredentials> {
+    fn from_ref(state: &RouterState) -> Self {
+        state.creds.clone()
     }
 }
 
@@ -138,10 +144,12 @@ impl FromRef<RouterState> for Arc<ProfilesState> {
 pub fn build_router_with_profiles(
     active: impl Into<ActiveState>,
     profiles: Arc<ProfilesState>,
+    creds: Option<crate::calendar::google::GoogleCredentials>,
 ) -> Router {
     let state = RouterState {
         active: active.into(),
         profiles,
+        creds,
     };
 
     let guarded_writes = Router::new()
@@ -203,6 +211,7 @@ pub fn build_router(state: impl Into<ActiveState>) -> Router {
                 profiles: vec![],
             },
         )),
+        None,
     )
 }
 
@@ -327,6 +336,7 @@ async fn list_profiles_handler(
 async fn switch_profile_handler(
     State(active): State<ActiveState>,
     State(profiles): State<Arc<ProfilesState>>,
+    State(creds): State<Option<crate::calendar::google::GoogleCredentials>>,
     Json(body): Json<SwitchProfileBody>,
 ) -> Result<impl IntoResponse, AppError> {
     if let Some(expected_id) = &body.expected_profile_id {
@@ -364,6 +374,7 @@ async fn switch_profile_handler(
             &data_dir,
             &entry,
             chrono::Utc::now(),
+            creds,
         )
     })
     .await
@@ -412,10 +423,6 @@ fn tokenize_csv(raw: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Parse a comma-separated string into `Vec<T>` where `T: Deserialize`.
-///
-/// Each token is trimmed and passed through `serde_json` string deserialization.
-/// Returns a `Validation` error if any token is unrecognised.
 fn parse_csv<T>(raw: &str, field: &str) -> Result<Vec<T>, AppError>
 where
     T: for<'de> serde::Deserialize<'de>,
@@ -435,8 +442,6 @@ fn parse_label_csv(raw: &str) -> Option<Vec<String>> {
     (!labels.is_empty()).then_some(labels)
 }
 
-/// Convert [`TaskListQuery`] to a [`TaskFilter`].
-///
 /// Returns a [`AppError::Validation`] error if any query parameter value is
 /// unrecognised (e.g. an invalid status or priority string).
 fn query_to_filter(q: TaskListQuery) -> Result<TaskFilter, AppError> {
@@ -518,8 +523,6 @@ async fn get_task_handler(
     Ok(Json(task))
 }
 
-/// `PATCH /api/tasks/:id` — apply a partial update to an existing task.
-///
 /// Mirrors the `update_task` Tauri command: both surfaces report the same
 /// [`Mutation::TaskUpdated`] and the shared trigger policy decides the
 /// reschedule (a transition to `Backlog` frees the task's auto-scheduled
@@ -578,8 +581,6 @@ struct SwitchProfileBody {
     expected_profile_id: Option<String>,
 }
 
-/// Request body for `POST /api/chunks/{id}/move`.
-///
 /// Datetimes are RFC 3339 / ISO 8601 strings (e.g. `2026-06-28T20:04:05Z`),
 /// parsed into UTC so a malformed value yields a `400` validation error rather
 /// than an opaque deserialization failure.
@@ -702,6 +703,16 @@ where
         .map_err(|e| AppError::Internal(format!("{what} task failed: {e}")))?
 }
 
+async fn run_blocking_json<T>(
+    what: &str,
+    f: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<Json<T>, AppError>
+where
+    T: serde::Serialize + Send + 'static,
+{
+    run_blocking(what, f).await.map(Json)
+}
+
 /// `POST /api/auth/google/begin` — start the `OAuth2` loopback flow.
 ///
 /// Returns `{ "url": "<consent-url>" }`. The caller opens the URL in a
@@ -752,11 +763,10 @@ async fn calendar_pull_handler(
     State(active): State<ActiveState>,
 ) -> Result<impl IntoResponse, AppError> {
     let handles = active.sync_write_handles()?;
-    run_blocking("pull", move || {
+    run_blocking_json("pull", move || {
         crate::commands::auth_commands::run_pull_and_reschedule(handles)
     })
     .await
-    .map(Json)
 }
 
 /// `POST /api/sync/now` — manual full sync: pull mirror, reschedule, push.
@@ -769,11 +779,10 @@ async fn sync_now_handler(
     State(active): State<ActiveState>,
 ) -> Result<impl IntoResponse, AppError> {
     let handles = active.sync_write_handles()?;
-    run_blocking("sync", move || {
+    run_blocking_json("sync", move || {
         crate::commands::auth_commands::run_sync_now(handles)
     })
     .await
-    .map(Json)
 }
 
 /// `GET /api/sync/status` — last-sync bookkeeping for the Settings UI.
@@ -797,11 +806,10 @@ async fn backup_now_handler(
     State(active): State<ActiveState>,
 ) -> Result<impl IntoResponse, AppError> {
     let handles = active.backup_write_handles()?;
-    run_blocking("backup", move || {
+    run_blocking_json("backup", move || {
         crate::commands::backup_commands::run_backup_now(handles)
     })
     .await
-    .map(Json)
 }
 
 /// `GET /api/backup/status` — backup bookkeeping for the Settings card.
@@ -884,6 +892,7 @@ pub async fn start_server(
     active: impl Into<ActiveState>,
     profiles: Arc<ProfilesState>,
     config: ServerConfig,
+    creds: Option<crate::calendar::google::GoogleCredentials>,
 ) -> Result<(), AppError> {
     if !config.enabled {
         log::info!("REST API server disabled (APRESWORK_API_ENABLED=false)");
@@ -897,7 +906,7 @@ pub async fn start_server(
 
     log::info!("REST API server listening on http://{addr}");
 
-    let router = build_router_with_profiles(active, profiles);
+    let router = build_router_with_profiles(active, profiles, creds);
 
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, router).await {

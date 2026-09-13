@@ -35,6 +35,11 @@ mod comments;
 mod profiles;
 mod tasks;
 
+pub(super) const TEST_PROFILE_ID: &str = "test-profile-id";
+pub(super) const TEST_PROFILE_NAME: &str = "Test Profile";
+pub(super) const TEST_CUSTOM_PORT: u16 = 8080;
+const UUID_VERSION_7_FIELD: u32 = 7000;
+
 pub(super) fn memory_state_with_sync(
     sync: std::sync::Arc<dyn CalendarSync>,
 ) -> std::sync::Arc<AppState> {
@@ -51,8 +56,8 @@ pub(super) fn memory_state_with_sync(
         profile_dir: std::path::PathBuf::from("/tmp/test-profile"),
         restore_notice: None,
         profile: crate::profiles::ActiveProfile {
-            id: "test-profile-id".to_owned(),
-            name: "Test Profile".to_owned(),
+            id: TEST_PROFILE_ID.to_owned(),
+            name: TEST_PROFILE_NAME.to_owned(),
         },
     })
 }
@@ -322,7 +327,7 @@ fn make_env<'a>(
 }
 
 #[test_case(&[], DEFAULT_API_PORT, true; "defaults")]
-#[test_case(&[("APRESWORK_API_PORT", "8080")], 8080, true; "custom_port")]
+#[test_case(&[("APRESWORK_API_PORT", "8080")], TEST_CUSTOM_PORT, true; "custom_port")]
 #[test_case(&[("APRESWORK_API_ENABLED", "false")], DEFAULT_API_PORT, false; "disabled")]
 #[test_case(&[("APRESWORK_API_ENABLED", "FALSE")], DEFAULT_API_PORT, false; "disabled_uppercase")]
 #[test_case(&[("APRESWORK_API_PORT", "not_a_number")], DEFAULT_API_PORT, true; "invalid_port_falls_back")]
@@ -332,36 +337,20 @@ fn server_config_from_env(env_pairs: &[(&str, &str)], expected_port: u16, expect
     assert_eq!(config.enabled, expected_enabled);
 }
 
+#[test_case(DEFAULT_API_PORT, false ; "disabled_returns_ok_without_binding")]
+#[test_case(0, true ; "binds_on_localhost_only")]
 #[tokio::test]
-async fn start_server_disabled_returns_ok_without_binding() {
-    let state = memory_state();
-    let profiles = memory_profiles_state();
-    let config = ServerConfig {
-        port: DEFAULT_API_PORT,
-        enabled: false,
-    };
-    // Should return Ok immediately without trying to bind any port.
-    let result = super::start_server(state, profiles, config).await;
-    assert!(
-        result.is_ok(),
-        "disabled server should return Ok, got: {result:?}"
-    );
+async fn start_server_result_is_ok(port: u16, enabled: bool) {
+    let config = ServerConfig { port, enabled };
+    let result = super::start_server(memory_state(), memory_profiles_state(), config, None).await;
+    assert!(result.is_ok(), "server should return Ok, got: {result:?}");
 }
 
-#[tokio::test]
-async fn start_server_binds_on_localhost_only() {
-    // Use a random high port to avoid clashing with real server.
-    let state = memory_state();
-    let profiles = memory_profiles_state();
-    let config = ServerConfig {
-        port: 0,
-        enabled: true,
-    };
-    let result = super::start_server(state, profiles, config).await;
-    assert!(
-        result.is_ok(),
-        "server start should succeed, got: {result:?}"
-    );
+fn next_test_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("00000000-0000-{UUID_VERSION_7_FIELD}-0000-{n:012x}")
 }
 
 fn make_http_test_task(state: &std::sync::Arc<AppState>, title: &str) -> Task {
@@ -370,7 +359,7 @@ fn make_http_test_task(state: &std::sync::Arc<AppState>, title: &str) -> Task {
         .get_default_schedule()
         .expect("default schedule");
     Task {
-        id: uuid::Uuid::now_v7().to_string(),
+        id: next_test_id(),
         title: title.to_owned(),
         deadline: Some(crate::test_support::utc(2026, 12, 31, 23, 59)),
         schedule_id: default_schedule.id,
@@ -381,7 +370,7 @@ fn make_http_test_task(state: &std::sync::Arc<AppState>, title: &str) -> Task {
 fn make_http_test_chunk(task_id: &str, start_time: chrono::DateTime<Utc>, minutes: i64) -> Chunk {
     let now = crate::test_support::test_now();
     Chunk {
-        id: uuid::Uuid::now_v7().to_string(),
+        id: next_test_id(),
         task_id: task_id.to_owned(),
         start_time,
         end_time: start_time + chrono::Duration::minutes(minutes),
@@ -478,7 +467,6 @@ async fn get_ok_array(app: axum::Router, uri: &str) -> Vec<Value> {
         .clone()
 }
 
-/// Assert that a response carries a `400 Bad Request` validation error.
 /// Pass `""` as the needle when only the error code matters (an empty needle matches any message).
 async fn assert_validation_error(response: axum::response::Response, message_contains: &str) {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -497,9 +485,7 @@ async fn assert_validation_error(response: axum::response::Response, message_con
 #[test_case(Some("test-profile-id"), StatusCode::NO_CONTENT ; "correct_id")]
 #[test_case(None::<&str>,            StatusCode::NO_CONTENT ; "no_guard")]
 #[tokio::test]
-/// Verify that the profile-ID guard on `DELETE /api/tasks/:id` returns `409 Conflict` on a
-/// mismatch and `204 No Content` on success. This endpoint is representative; the same
-/// middleware applies to all write endpoints (see `build_router`).
+/// This endpoint is representative; the same middleware applies to all write endpoints (see `build_router`).
 async fn profile_guard_on_delete_task(expected_id: Option<&str>, expected_status: StatusCode) {
     let state = memory_state();
     let task = seed_task(&state, "Guard test");
@@ -538,7 +524,7 @@ async fn profile_guard_fires_on_delete_comment() {
     // Seed a task so we have a valid comment parent.
     let default_schedule = state.store.get_default_schedule().expect("schedule");
     let task = crate::domain::models::Task {
-        id: uuid::Uuid::now_v7().to_string(),
+        id: next_test_id(),
         title: "Comment parent".to_owned(),
         schedule_id: default_schedule.id,
         ..crate::domain::models::Task::test_default()
@@ -546,8 +532,8 @@ async fn profile_guard_fires_on_delete_comment() {
     state.store.create_task(&task).expect("task");
     let now = crate::test_support::test_now();
     let comment = Comment {
-        id: uuid::Uuid::now_v7().to_string(),
-        task_id: task.id.clone(),
+        id: next_test_id(),
+        task_id: task.id,
         content: "hello".to_owned(),
         author: "User".to_owned(),
         created_at: now,
