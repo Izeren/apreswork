@@ -37,10 +37,26 @@ use crate::profiles::registry::{ProfilesRegistry, REGISTRY_VERSION};
 use crate::profiles::ProfilesState;
 use crate::services::comment::DEFAULT_AUTHOR;
 use crate::services::trigger::Mutation;
-use crate::state::ActiveState;
+use crate::state::{ActiveState, SyncWriteHandles};
 use crate::traits::calendar_sync::AuthStatus;
 
 pub const DEFAULT_API_PORT: u16 = 19532;
+
+pub(crate) const ALLOWED_HOST_IPV4: &str = "127.0.0.1";
+pub(crate) const ALLOWED_HOST_HOSTNAME: &str = "localhost";
+
+/// Log a 5xx error server-side and return a generic response tuple.
+///
+/// Never surfaces the inner error message to the caller — only the generic
+/// `msg` reaches the HTTP response body.
+fn server_error_response(
+    code: &'static str,
+    msg: &'static str,
+    error: &dyn std::fmt::Display,
+) -> (StatusCode, &'static str, String) {
+    log::error!("API {code} error: {error}");
+    (StatusCode::INTERNAL_SERVER_ERROR, code, msg.to_owned())
+}
 
 /// HTTP response representation of [`AppError`].
 ///
@@ -59,36 +75,16 @@ impl IntoResponse for AppError {
             ),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "validation", msg.clone()),
             AppError::Database(_) => {
-                log::error!("API database error: {self}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "database",
-                    "A database error occurred.".to_owned(),
-                )
+                server_error_response("database", "A database error occurred.", &self)
             }
             AppError::CalendarSync(_) => {
-                log::error!("API calendar sync error: {self}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "calendar_sync",
-                    "A calendar sync error occurred.".to_owned(),
-                )
+                server_error_response("calendar_sync", "A calendar sync error occurred.", &self)
             }
             AppError::Backup(_) => {
-                log::error!("API backup error: {self}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "backup",
-                    "A backup error occurred.".to_owned(),
-                )
+                server_error_response("backup", "A backup error occurred.", &self)
             }
             AppError::Internal(_) => {
-                log::error!("API internal error: {self}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "An internal server error occurred.".to_owned(),
-                )
+                server_error_response("internal", "An internal server error occurred.", &self)
             }
             // 4xx: user-actionable — echo the message directly.
             AppError::ProfileMismatch(msg) => {
@@ -284,7 +280,7 @@ async fn validate_host_header(request: Request, next: Next) -> Response {
         .and_then(|value| value.to_str().ok())
         .is_some_and(|host| {
             let host = host.rsplit_once(':').map_or(host, |(name, _port)| name);
-            host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")
+            host == ALLOWED_HOST_IPV4 || host.eq_ignore_ascii_case(ALLOWED_HOST_HOSTNAME)
         });
 
     if host_ok {
@@ -637,8 +633,7 @@ async fn list_comments_handler(
     Ok(Json(comments))
 }
 
-/// Create a comment on a task. Comments never affect scheduling, so no
-/// reschedule trigger fires.
+/// Comments never affect scheduling, so no reschedule trigger fires.
 async fn create_comment_handler(
     State(active): State<ActiveState>,
     Path(task_id): Path<String>,
@@ -713,6 +708,19 @@ where
     run_blocking(what, f).await.map(Json)
 }
 
+async fn run_sync_handles_op<T>(
+    active: &ActiveState,
+    task_name: &'static str,
+    f: impl FnOnce(SyncWriteHandles, DateTime<Utc>) -> Result<T, AppError> + Send + 'static,
+) -> Result<Json<T>, AppError>
+where
+    T: serde::Serialize + Send + 'static,
+{
+    let handles = active.sync_write_handles()?;
+    let now = Utc::now();
+    run_blocking_json(task_name, move || f(handles, now)).await
+}
+
 /// `POST /api/auth/google/begin` — start the `OAuth2` loopback flow.
 ///
 /// Returns `{ "url": "<consent-url>" }`. The caller opens the URL in a
@@ -762,10 +770,11 @@ async fn google_auth_disconnect_handler(
 async fn calendar_pull_handler(
     State(active): State<ActiveState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let handles = active.sync_write_handles()?;
-    run_blocking_json("pull", move || {
-        crate::commands::auth_commands::run_pull_and_reschedule(handles)
-    })
+    run_sync_handles_op(
+        &active,
+        "pull",
+        crate::commands::auth_commands::run_pull_and_reschedule,
+    )
     .await
 }
 
@@ -778,10 +787,11 @@ async fn calendar_pull_handler(
 async fn sync_now_handler(
     State(active): State<ActiveState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let handles = active.sync_write_handles()?;
-    run_blocking_json("sync", move || {
-        crate::commands::auth_commands::run_sync_now(handles)
-    })
+    run_sync_handles_op(
+        &active,
+        "sync",
+        crate::commands::auth_commands::run_sync_now,
+    )
     .await
 }
 

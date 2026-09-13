@@ -89,6 +89,7 @@ pub fn run() {
             commands::auth_commands::pull_external_events,
             commands::auth_commands::sync_now,
             commands::auth_commands::get_sync_status,
+            commands::auth_commands::clear_sync_error,
             commands::auth_commands::create_user_event,
             commands::auth_commands::update_user_event,
             commands::auth_commands::delete_user_event,

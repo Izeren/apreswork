@@ -258,7 +258,12 @@ export function getSyncStatus(): Promise<SyncStatus> {
   return invoke('get_sync_status');
 }
 
-/** Resolves to the mirrored event; callers must still refetch the visible range (the reschedule may cascade other chunks). */
+/** Call after a successful OAuth reconnect. */
+export function clearSyncError(): Promise<void> {
+  return invoke('clear_sync_error');
+}
+
+/** Callers must still refetch the visible range (the reschedule may cascade other chunks). */
 export function createUserEvent(
   calendarId: string,
   payload: UserEventPayload,
@@ -266,7 +271,7 @@ export function createUserEvent(
   return invoke('create_user_event', { calendarId, payload });
 }
 
-/** Resolves to the re-mirrored event; see createUserEvent. */
+/** See createUserEvent. */
 export function updateUserEvent(
   calendarId: string,
   eventId: string,
@@ -366,10 +371,5 @@ export const apiErrorMessage = errorMessageFn(['validation']);
  */
 export const syncErrorMessage = errorMessageFn(['validation', 'calendar_sync']);
 
-/**
- * Like `apiErrorMessage`, but also surfaces `backup` messages.
- *
- * Backup messages are constructed sanitized (archive/database problems,
- * never tokens) and user-actionable, so they are safe to display verbatim.
- */
+/** Like `syncErrorMessage`, but surfaces `backup` messages instead. */
 export const backupErrorMessage = errorMessageFn(['validation', 'backup']);

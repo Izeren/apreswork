@@ -125,9 +125,10 @@
           status = s;
           if (s.type === 'connected') {
             stopPolling();
+            syncStatus = null;
+            apiClient.clearSyncError().catch(() => {});
             toastState.success('Google Calendar connected.');
             loadPicker();
-            loadSyncStatus();
           }
         })
         .catch(() => {

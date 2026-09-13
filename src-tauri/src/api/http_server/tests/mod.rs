@@ -17,7 +17,7 @@ use serde_json::Value;
 use test_case::test_case;
 use tower::ServiceExt as _;
 
-use super::{AppError, ServerConfig, DEFAULT_API_PORT};
+use super::{AppError, ServerConfig, ALLOWED_HOST_HOSTNAME, ALLOWED_HOST_IPV4, DEFAULT_API_PORT};
 use crate::db::sqlite::SqliteStore;
 use crate::scheduler::engine::DefaultScheduler;
 use crate::services::trigger::{DefaultExecutor, RescheduleTrigger};
@@ -39,6 +39,12 @@ pub(super) const TEST_PROFILE_ID: &str = "test-profile-id";
 pub(super) const TEST_PROFILE_NAME: &str = "Test Profile";
 pub(super) const TEST_CUSTOM_PORT: u16 = 8080;
 const UUID_VERSION_7_FIELD: u32 = 7000;
+// Port suffix used in host:port test cases; the port value is DEFAULT_API_PORT.
+const LOOPBACK_IP_WITH_PORT: &str = "127.0.0.1:19532";
+const LOCALHOST_WITH_PORT: &str = "localhost:19532";
+const LOCALHOST_MIXED_CASE_WITH_PORT: &str = "LocalHost:19532";
+const FOREIGN_HOST_WITH_PORT: &str = "evil.example:19532";
+const IPV6_WITH_PORT: &str = "[::1]:19532";
 
 pub(super) fn memory_state_with_sync(
     sync: std::sync::Arc<dyn CalendarSync>,
@@ -244,20 +250,21 @@ async fn get_profile_returns_active_profile_identity() {
     assert_eq!(obj.len(), 2, "identity only — no pin material, no paths");
 }
 
+#[test_case("/api/tasks", StatusCode::BAD_REQUEST, Some("validation") ; "stateful_endpoint")]
+#[test_case("/api/health", StatusCode::OK, None ; "health_endpoint")]
 #[tokio::test]
-async fn empty_slot_gives_validation_error_on_stateful_endpoints() {
+async fn empty_slot_endpoint_behavior(
+    uri: &str,
+    expected_status: StatusCode,
+    expected_error: Option<&str>,
+) {
     let app = super::build_router(crate::state::ActiveState::new());
-    let response = get_request(app, "/api/tasks").await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let json = body_json(response).await;
-    assert_eq!(json["error"], "validation");
-}
-
-#[tokio::test]
-async fn empty_slot_still_serves_health() {
-    let app = super::build_router(crate::state::ActiveState::new());
-    let response = get_request(app, "/api/health").await;
-    assert_eq!(response.status(), StatusCode::OK);
+    let response = get_request(app, uri).await;
+    assert_eq!(response.status(), expected_status);
+    if let Some(error_code) = expected_error {
+        let json = body_json(response).await;
+        assert_eq!(json["error"], error_code);
+    }
 }
 
 /// Build and send a request with an explicit (or deliberately absent) `Host`
@@ -281,11 +288,11 @@ async fn make_host_response(host: &str) -> axum::response::Response {
     request_with_host(app, "/api/health", Some(host)).await
 }
 
-#[test_case("127.0.0.1" ; "bare loopback ip")]
-#[test_case("127.0.0.1:19532" ; "loopback ip with port")]
-#[test_case("localhost" ; "bare localhost")]
-#[test_case("localhost:19532" ; "localhost with port")]
-#[test_case("LocalHost:19532" ; "hostnames are case insensitive")]
+#[test_case(ALLOWED_HOST_IPV4 ; "bare loopback ip")]
+#[test_case(LOOPBACK_IP_WITH_PORT ; "loopback ip with port")]
+#[test_case(ALLOWED_HOST_HOSTNAME ; "bare localhost")]
+#[test_case(LOCALHOST_WITH_PORT ; "localhost with port")]
+#[test_case(LOCALHOST_MIXED_CASE_WITH_PORT ; "hostnames are case insensitive")]
 #[tokio::test]
 async fn host_header_loopback_allowed(host: &str) {
     let response = make_host_response(host).await;
@@ -293,9 +300,9 @@ async fn host_header_loopback_allowed(host: &str) {
 }
 
 #[test_case("evil.example" ; "foreign hostname")]
-#[test_case("evil.example:19532" ; "foreign hostname with port")]
+#[test_case(FOREIGN_HOST_WITH_PORT ; "foreign hostname with port")]
 #[test_case("localhost.evil.example" ; "loopback prefix trick")]
-#[test_case("[::1]:19532" ; "ipv6 loopback not in allowlist (server binds v4 only)")]
+#[test_case(IPV6_WITH_PORT ; "ipv6 loopback not in allowlist (server binds v4 only)")]
 #[tokio::test]
 async fn host_header_non_loopback_rejected(host: &str) {
     let response = make_host_response(host).await;
@@ -328,6 +335,7 @@ fn make_env<'a>(
 
 #[test_case(&[], DEFAULT_API_PORT, true; "defaults")]
 #[test_case(&[("APRESWORK_API_PORT", "8080")], TEST_CUSTOM_PORT, true; "custom_port")]
+#[test_case(&[("APRESWORK_API_ENABLED", "true")], DEFAULT_API_PORT, true; "explicit_true")]
 #[test_case(&[("APRESWORK_API_ENABLED", "false")], DEFAULT_API_PORT, false; "disabled")]
 #[test_case(&[("APRESWORK_API_ENABLED", "FALSE")], DEFAULT_API_PORT, false; "disabled_uppercase")]
 #[test_case(&[("APRESWORK_API_PORT", "not_a_number")], DEFAULT_API_PORT, true; "invalid_port_falls_back")]
@@ -441,7 +449,7 @@ async fn send_request(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header(HOST, "127.0.0.1");
+        .header(HOST, ALLOWED_HOST_IPV4);
     let req = if let Some(b) = body {
         builder = builder.header(CONTENT_TYPE, "application/json");
         builder
